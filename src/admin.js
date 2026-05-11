@@ -1133,7 +1133,7 @@ function updateBatchDeleteBtn() {
 async function batchDelete() {
   const count = selectedNanoids.size;
   if (count === 0) return;
-  if (!confirm(`确定删除选中的 ${count} 张图片？此操作不可撤销。`)) return;
+  if (!confirm(\`确定删除选中的 \${count} 张图片？此操作不可撤销。\`)) return;
 
   const btn = document.getElementById('batch-delete-btn');
   btn.disabled = true;
@@ -1145,7 +1145,7 @@ async function batchDelete() {
       body: JSON.stringify({ nanoids: [...selectedNanoids] }),
     });
     if (resp.ok) {
-      showToast(`已删除 ${count} 张图片`, 'success');
+      showToast(\`已删除 \${count} 张图片\`, 'success');
       selectedNanoids.clear();
       refreshImages();
     } else {
@@ -1196,7 +1196,7 @@ function renderImages(images) {
       <div class="card-thumb" onclick="openPreview(\${idx})">
         <img src="\${img.publicUrl}" alt="" loading="lazy">
         <div class="overlay"><span>🔍 预览</span></div>
-        <div class="card-check"><input type="checkbox" class="img-check" data-nanoid="${img.nanoid}" onclick="event.stopPropagation()" onchange="onImageCheck(this)"></div>
+        <div class="card-check"><input type="checkbox" class="img-check" data-nanoid="\${img.nanoid}" onclick="event.stopPropagation()" onchange="onImageCheck(this)"></div>
       </div>
       <div class="card-body">
         <div class="card-name" title="\${escHtml(img.fileName || img.r2Key)}">\${escHtml(img.fileName || img.r2Key)}</div>
@@ -1285,7 +1285,7 @@ function applyFilter() {
       <div class="card-thumb" onclick="openPreview(\${idx})">
         <img src="\${img.publicUrl}" alt="" loading="lazy">
         <div class="overlay"><span>🔍 预览</span></div>
-        <div class="card-check"><input type="checkbox" class="img-check" data-nanoid="${img.nanoid}" onclick="event.stopPropagation()" onchange="onImageCheck(this)"></div>
+        <div class="card-check"><input type="checkbox" class="img-check" data-nanoid="\${img.nanoid}" onclick="event.stopPropagation()" onchange="onImageCheck(this)"></div>
       </div>
       <div class="card-body">
         <div class="card-name" title="\${escHtml(img.fileName || img.r2Key)}">\${escHtml(img.fileName || img.r2Key)}</div>
