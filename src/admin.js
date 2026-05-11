@@ -593,7 +593,7 @@ function serveAdminPage(env) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://telegram.org; connect-src 'self'; form-action 'self'; frame-src https://telegram.org;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://telegram.org; connect-src 'self'; form-action 'self'; frame-src https://telegram.org https://oauth.telegram.org;">
 <title>图床管理</title>
 <style>
   :root {

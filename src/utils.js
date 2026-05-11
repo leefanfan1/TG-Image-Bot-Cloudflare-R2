@@ -116,7 +116,7 @@ export function secureHeaders(headers = {}) {
 }
 
 // CSP headers for admin page
-// Note: Telegram Login Widget requires https://telegram.org in script-src and frame-src
+// Note: Telegram Login Widget requires both telegram.org (script) and oauth.telegram.org (iframe)
 export function cspHeaders() {
   return {
     'Content-Security-Policy':
@@ -126,6 +126,6 @@ export function cspHeaders() {
       + "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://telegram.org; "
       + "connect-src 'self'; "
       + "form-action 'self'; "
-      + "frame-src https://telegram.org;",
+      + "frame-src https://telegram.org https://oauth.telegram.org;",
   };
 }
