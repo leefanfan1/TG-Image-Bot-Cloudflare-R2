@@ -125,9 +125,11 @@ async function handleUpload(env, chatId, msg, from, fileId) {
     return;
   }
 
-  // Download file from Telegram
-  const fileResp2 = await fetch(buildTelegramUrl(env.BOT_TOKEN, `file/${filePath}`), { signal: AbortSignal.timeout(30000) });
+  // Download file from Telegram (note: URL format is file/bot<TOKEN>/<path>, NOT bot<TOKEN>/file/<path>)
+  const fileUrl = `https://api.telegram.org/file/bot${env.BOT_TOKEN}/${filePath}`;
+  const fileResp2 = await fetch(fileUrl, { signal: AbortSignal.timeout(30000) });
   if (!fileResp2.ok) {
+    console.error(`File download failed: ${fileResp2.status} ${fileResp2.statusText} for ${filePath}`);
     await sendMessage(env.BOT_TOKEN, chatId, '❌ 下载文件失败。', msg.message_id);
     return;
   }
