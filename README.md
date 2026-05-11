@@ -97,10 +97,10 @@ id = "你的KV命名空间ID"
 preview_id = "你的KV命名空间ID"
 
 [vars]
-ALLOWED_USERS    = "你的TG用户名"     # 允许使用的用户，逗号分隔，留空=所有人可用
-ADMIN_USERNAMES  = "你的TG用户名"     # 管理员用户名，可删任意图片
+ALLOWED_USERS    = "你的TG用户名"     # 允许使用的用户，逗号分隔，不要 @，留空=所有人可用
+ADMIN_USERNAMES  = "你的TG用户名"     # 管理员，逗号分隔，不要 @
 PUBLIC_URL       = "https://你的R2域名"
-TELEGRAM_BOT_USERNAME = "你的Bot用户名"  # 不含 @，如 myimagebot
+TELEGRAM_BOT_USERNAME = "你的Bot用户名"  # 不要 @，如 myimagebot
 ```
 
 推送到 GitHub，在 Cloudflare Dashboard 中连接到 Git 仓库，自动部署。
