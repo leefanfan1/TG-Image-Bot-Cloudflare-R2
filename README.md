@@ -25,6 +25,23 @@
 
 ## 快速开始
 
+### 获取代码
+
+其他人要使用本项目，不能直接改我的配置。你需要先把代码复制到你自己的仓库：
+
+**方法一（推荐）：导入为私有仓库**
+1. 在 GitHub 点击右上角 `+` → **Import repository**
+2. "Your old repository's clone URL" 填入本仓库地址
+3. "Repository name" 随便填，**Privacy 选 Private**
+4. 导入完成后，你的代码就是私有的，`wrangler.toml` 里的配置不会暴露
+
+**方法二：Fork（仓库将是公开的）**
+- 直接点右上角 Fork 按钮
+- ⚠️ **Fork 后仓库默认公开**，如果你把真实的 R2 Bucket 名、KV ID 写进 `wrangler.toml`，这些信息会公开给所有人
+- 如果你一定要用 Fork，每次推代码前务必检查 `wrangler.toml` 是否含敏感信息
+
+> 强烈建议用方法一，`wrangler.toml` 里会填写你的 R2 Bucket 名称、KV ID、TG 用户名等敏感信息，**私有仓库更安全**。
+
 ### 前置准备
 
 - [Cloudflare](https://dash.cloudflare.com) 账号（免费版即可）
