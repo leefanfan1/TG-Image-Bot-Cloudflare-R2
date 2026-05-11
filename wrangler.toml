@@ -1,0 +1,38 @@
+name = "tg-image-bot"
+main = "src/index.js"
+compatibility_date = "2026-05-01"
+
+# ═══════════════════════════════════════════
+# Cloudflare R2 — 图片存储
+# ═══════════════════════════════════════════
+[[r2_buckets]]
+binding = "IMG_BUCKET"
+bucket_name = "请替换为你的R2-Bucket名称"
+
+# ═══════════════════════════════════════════
+# KV — 元数据存储 (需先创建)
+# 运行: npx wrangler kv namespace create IMG_KV
+# ═══════════════════════════════════════════
+[[kv_namespaces]]
+binding = "IMG_KV"
+id = "请替换为你的KV-ID"
+preview_id = "请替换为你的KV-ID"
+
+# ═══════════════════════════════════════════
+# 环境变量
+# ═══════════════════════════════════════════
+[vars]
+# 允许使用的用户（逗号分隔TG用户名），留空 = 所有人可用
+ALLOWED_USERS = "你的TG用户名"
+# 管理员用户名（可删任意图片），逗号分隔
+ADMIN_USERNAMES = "你的TG用户名"
+# R2 绑定的公开域名，如 https://img.example.com
+PUBLIC_URL = "https://你的R2域名"
+# Telegram Bot 用户名（不含 @），用于管理面板的 Telegram 登录
+TELEGRAM_BOT_USERNAME = "你的Bot用户名"
+
+# ═══════════════════════════════════════════
+# Secret (通过 wrangler secret put 设置，不要写在文件里)
+# ═══════════════════════════════════════════
+#   wrangler secret put BOT_TOKEN           # Telegram Bot Token（必填）
+#   wrangler secret put WEBHOOK_SECRET      # Webhook 验证密钥（强烈建议）
