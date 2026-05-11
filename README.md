@@ -31,7 +31,7 @@
 
 **方法一（推荐）：导入为私有仓库**
 1. 在 GitHub 点击右上角 `+` → **Import repository**
-2. "Your old repository's clone URL" 填入 `https://github.com/leefanfan1/tg-image-r2`
+2. "Your old repository's clone URL" 填入 `https://github.com/leefanfan1/TG-Image-Bot-Cloudflare-R2`
 3. "Repository name" 随便填，**Privacy 选 Private**
 4. 导入完成后，你的代码就是私有的，`wrangler.toml` 里的配置不会暴露
 
