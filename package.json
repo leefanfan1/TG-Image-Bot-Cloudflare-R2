@@ -1,5 +1,5 @@
 {
-  "name": "tg-image-bot",
+  "name": "tg-image-r2",
   "version": "1.0.0",
   "description": "Telegram Bot → Cloudflare R2 image hosting with Markdown links, delete support, and web admin panel",
   "main": "src/index.js",

@@ -1,4 +1,4 @@
-# TG Image Bot
+# TG Image Bot — Cloudflare R2
 
 > 把 Telegram Bot 变成你的个人图床 — 发送图片，自动上传到 Cloudflare R2，秒回直链。
 

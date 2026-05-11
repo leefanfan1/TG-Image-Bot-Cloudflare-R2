@@ -1,4 +1,4 @@
-name = "tg-image-bot"
+name = "tg-image-r2"
 main = "src/index.js"
 compatibility_date = "2026-05-01"
 
