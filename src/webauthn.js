@@ -233,28 +233,77 @@ function buildSpkiEcPublicKey(rawPoint) {
   return credIdB64;
 }
 
-// --- Authentication ---
+// --- DER-to-P1363 ECDSA signature converter ---
+//
+// WebAuthn returns ECDSA signatures in DER format (ASN.1 SEQUENCE of two INTEGERs),
+// but Web Crypto API's SubtleCrypto.verify() expects raw P1363 format (r||s concatenation).
+// This function converts DER to P1363 for P-256 (32-byte components).
+
+function derToP1363(derBytes) {
+  const keySize = 32; // P-256 field element size
+  let pos = 0;
+  if (derBytes[pos++] !== 0x30) throw new Error('Not a DER SEQUENCE');
+
+  // Skip total length
+  if (derBytes[pos] & 0x80) {
+    const lenBytes = derBytes[pos++] & 0x7f;
+    pos += lenBytes;
+  } else {
+    pos++;
+  }
+
+  // Read r (INTEGER)
+  if (derBytes[pos++] !== 0x02) throw new Error('Expected INTEGER for r');
+  let rLen = derBytes[pos++];
+  const rStart = pos;
+  pos += rLen;
+
+  // Read s (INTEGER)
+  if (derBytes[pos++] !== 0x02) throw new Error('Expected INTEGER for s');
+  let sLen = derBytes[pos++];
+  const sStart = pos;
+
+  const rBytes = derBytes.slice(rStart, rStart + rLen);
+  const sBytes = derBytes.slice(sStart, sStart + sLen);
+
+  // Pad/trim each component to keySize bytes
+  const rPadded = new Uint8Array(keySize);
+  const sPadded = new Uint8Array(keySize);
+  if (rBytes.length <= keySize) {
+    rPadded.set(rBytes, keySize - rBytes.length);
+  } else {
+    rPadded.set(rBytes.slice(rBytes.length - keySize));
+  }
+  if (sBytes.length <= keySize) {
+    sPadded.set(sBytes, keySize - sBytes.length);
+  } else {
+    sPadded.set(sBytes.slice(sBytes.length - keySize));
+  }
+
+  // Concatenate r || s
+  const p1363 = new Uint8Array(keySize * 2);
+  p1363.set(rPadded, 0);
+  p1363.set(sPadded, keySize);
+  return p1363;
+}
 
 export async function beginAuthentication(env) {
-  // List all credentials
+  // List all credentials (just to check any exist)
   const list = await env.IMG_KV.list({ prefix: 'wa:cred:' });
   if (list.keys.length === 0) return null;
 
   const challenge = crypto.getRandomValues(new Uint8Array(32));
   const challengeB64 = toBase64url(challenge);
 
-  // Store challenge for verification
+  // Store challenge for verification (5 min TTL)
   await env.IMG_KV.put(`wa:auth:${challengeB64}`, 'pending', { expirationTtl: 300 });
 
-  const allowCredentials = list.keys.map(k => ({
-    id: k.name.replace('wa:cred:', ''),
-    type: 'public-key',
-    transports: ['internal'],
-  }));
-
+  // Omit allowCredentials — the credential was created as a discoverable
+  // resident key, so the authenticator can enumerate it without being told
+  // which credential ID to look for. This avoids platform authenticator
+  // mismatches (Windows Hello / macOS Touch ID).
   return {
     challenge: challengeB64,
-    allowCredentials,
     userVerification: 'required',
     timeout: 60000,
   };
@@ -323,11 +372,15 @@ export async function completeAuthentication(env, response, domain) {
   // Parse signature (WebAuthn returns DER-encoded ECDSA signature)
   const signatureBytes = fromBase64url(clientResp.signature);
 
+  // WebAuthn returns DER-encoded ECDSA signatures, but SubtleCrypto.verify()
+  // expects raw P1363 format (r||s concatenation). Convert it.
+  const p1363Sig = derToP1363(signatureBytes);
+
   // Verify
   const isValid = await crypto.subtle.verify(
     { name: 'ECDSA', hash: 'SHA-256' },
     publicKey,
-    signatureBytes,
+    p1363Sig,
     sigBase
   );
 

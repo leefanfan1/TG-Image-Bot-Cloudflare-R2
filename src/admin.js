@@ -1136,7 +1136,9 @@ async function loginPassKey() {
     }
     const options = await beginResp.json();
     options.challenge = base64ToArray(options.challenge);
-    options.allowCredentials = (options.allowCredentials || []).map(c => ({ ...c, id: base64ToArray(c.id) }));
+    if (options.allowCredentials) {
+      options.allowCredentials = options.allowCredentials.map(c => ({ ...c, id: base64ToArray(c.id) }));
+    }
     const cred = await navigator.credentials.get({ publicKey: options });
     const resp = await fetch('/admin/api/webauthn/auth/complete', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
