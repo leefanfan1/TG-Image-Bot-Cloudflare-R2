@@ -63,6 +63,8 @@ export function handleAdminRequest(request, env) {
     return handleWebAuthnCredentials(request, env);
   if (path === '/admin/api/webauthn/credentials/delete' && request.method === 'POST')
     return handleWebAuthnDeleteCredential(request, env);
+  if (path === '/admin/api/webauthn/setup-status' && request.method === 'GET')
+    return handleWebAuthnSetupStatus(request, env);
 
   return new Response('Not found', { status: 404, headers: secureHeaders() });
 }
@@ -129,7 +131,18 @@ async function handleTelegramLogin(request, env) {
     });
   }
 
-  const authData = await request.json();
+  if (!request.headers.get('content-type')?.includes('application/json')) {
+    return new Response(JSON.stringify({ error: 'Bad request' }), {
+      status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
+
+  let authData;
+  try { authData = await request.json(); } catch {
+    return new Response(JSON.stringify({ error: 'Bad request' }), {
+      status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
   if (!authData || !authData.hash || !authData.id || !authData.auth_date) {
     return new Response(JSON.stringify({ error: 'Invalid auth data' }), {
       status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
@@ -239,7 +252,12 @@ async function handleDeleteImage(request, env) {
     });
   }
 
-  const body = await request.json();
+  let body;
+  try { body = await request.json(); } catch {
+    return new Response(JSON.stringify({ error: 'Bad request' }), {
+      status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
   const nanoid = body && body.nanoid;
   if (!nanoid || typeof nanoid !== 'string' || !/^[a-z0-9]{8,32}$/.test(nanoid)) {
     return new Response(JSON.stringify({ error: 'Invalid nanoid' }), {
@@ -299,8 +317,13 @@ async function handleBatchDelete(request, env) {
     });
   }
 
-  const body = await request.json();
-  const nanoids = body.nanoids;
+  let body;
+  try { body = await request.json(); } catch {
+    return new Response(JSON.stringify({ error: 'Bad request' }), {
+      status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
+  const nanoids = body && body.nanoids;
   if (!Array.isArray(nanoids) || nanoids.length === 0 || nanoids.length > 50) {
     return new Response(JSON.stringify({ error: 'Invalid nanoids array (max 50)' }), {
       status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
@@ -349,8 +372,12 @@ async function handleBatchDelete(request, env) {
 // --- WebAuthn Registration ---
 
 async function handleWebAuthnRegisterBegin(request, env) {
-  const auth = await checkSession(request, env);
-  if (!auth) return unauthorized();
+  // Only allow first-time bootstrap without auth; subsequent registrations require login
+  const existing = await env.IMG_KV.list({ prefix: 'wa:cred:' });
+  if (existing.keys.length > 0) {
+    const auth = await checkSession(request, env);
+    if (!auth) return unauthorized();
+  }
 
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
   if (!(await checkRateLimit(env, "admin-reg:" + ip, 10, 60))) {
@@ -372,8 +399,12 @@ async function handleWebAuthnRegisterBegin(request, env) {
 }
 
 async function handleWebAuthnRegisterComplete(request, env) {
-  const auth = await checkSession(request, env);
-  if (!auth) return unauthorized();
+  // Only allow first-time bootstrap without auth; subsequent registrations require login
+  const existing = await env.IMG_KV.list({ prefix: 'wa:cred:' });
+  if (existing.keys.length > 0) {
+    const auth = await checkSession(request, env);
+    if (!auth) return unauthorized();
+  }
 
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
   if (!(await checkRateLimit(env, "admin-reg-complete:" + ip, 10, 60))) {
@@ -385,11 +416,31 @@ async function handleWebAuthnRegisterComplete(request, env) {
   const url = new URL(request.url);
   const domain = url.hostname;
 
-  const body = await request.json();
+  if (!request.headers.get('content-type')?.includes('application/json')) {
+    return new Response(JSON.stringify({ error: 'Bad request' }), {
+      status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
+  let body;
+  try { body = await request.json(); } catch {
+    return new Response(JSON.stringify({ error: 'Bad request' }), {
+      status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
   try {
     const credId = await completeRegistration(env, body, domain);
+
+    // Auto-create session after successful registration
+    const sessionId = 'wa:' + toBase64urlBody(crypto.getRandomValues(new Uint8Array(24)));
+    await env.IMG_KV.put(`wa:session:${sessionId}`, '1', { expirationTtl: 86400 });
+
+    const secure = !isLocalhost(request);
     return new Response(JSON.stringify({ ok: true, credId }), {
-      headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+      headers: {
+        ...secureHeaders({ 'Content-Type': 'application/json' }),
+        ...cspHeaders(),
+        'Set-Cookie': `admin_token=${sessionId}; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=86400${secure ? '; Secure' : ''}`,
+      },
     });
   } catch (err) {
     return new Response(JSON.stringify({ error: err.message }), {
@@ -431,7 +482,17 @@ async function handleWebAuthnAuthComplete(request, env) {
   const url = new URL(request.url);
   const domain = url.hostname;
 
-  const body = await request.json();
+  if (!request.headers.get('content-type')?.includes('application/json')) {
+    return new Response(JSON.stringify({ error: 'Bad request' }), {
+      status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
+  let body;
+  try { body = await request.json(); } catch {
+    return new Response(JSON.stringify({ error: 'Bad request' }), {
+      status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
   try {
     await completeAuthentication(env, body, domain);
 
@@ -489,7 +550,17 @@ async function handleWebAuthnDeleteCredential(request, env) {
     });
   }
 
-  const body = await request.json();
+  if (!request.headers.get('content-type')?.includes('application/json')) {
+    return new Response(JSON.stringify({ error: 'Bad request' }), {
+      status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
+  let body;
+  try { body = await request.json(); } catch {
+    return new Response(JSON.stringify({ error: 'Bad request' }), {
+      status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
   try {
     await deleteCredential(env, body.credId);
     return new Response(JSON.stringify({ ok: true }), {
@@ -502,13 +573,20 @@ async function handleWebAuthnDeleteCredential(request, env) {
   }
 }
 
+async function handleWebAuthnSetupStatus(request, env) {
+  const existing = await env.IMG_KV.list({ prefix: 'wa:cred:' });
+  return new Response(JSON.stringify({ canRegister: existing.keys.length === 0 }), {
+    headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+  });
+}
+
 // ============================================================
 //  Admin HTML page (rendered inline)
 // ============================================================
 
 function serveAdminPage(env) {
   const hasTelegramLogin = !!env.TELEGRAM_BOT_USERNAME && !!env.BOT_TOKEN;
-  const botUsername = env.TELEGRAM_BOT_USERNAME || '';
+  const botUsername = (env.TELEGRAM_BOT_USERNAME || '').replace(/[^a-zA-Z0-9_]/g, '');
 
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -519,39 +597,39 @@ function serveAdminPage(env) {
 <title>图床管理</title>
 <style>
   :root {
-    --bg: #0d0d1a;
-    --bg-card: #16162a;
-    --bg-hover: #1e1e3a;
-    --bg-elevated: #1a1a32;
-    --text: #e8e8f0;
-    --text-muted: #8888a8;
-    --text-dim: #5c5c7a;
+    --bg: #f0f2f5;
+    --bg-card: #ffffff;
+    --bg-hover: #f8f9fa;
+    --bg-elevated: #ffffff;
+    --text: #1a1a2e;
+    --text-muted: #6b6b80;
+    --text-dim: #a0a0b4;
     --accent: #6c5ce7;
     --accent-hover: #7d6ff0;
-    --accent-glow: rgba(108,92,231,0.25);
+    --accent-glow: rgba(108,92,231,0.12);
     --danger: #e74c5c;
     --danger-hover: #c0394b;
     --success: #2ecc71;
-    --border: rgba(255,255,255,0.06);
+    --border: rgba(0,0,0,0.08);
     --radius: 10px;
     --radius-sm: 6px;
-    --shadow: 0 2px 16px rgba(0,0,0,0.35);
+    --shadow: 0 2px 12px rgba(0,0,0,0.08);
     --transition: 0.2s ease;
-    --header-gradient: linear-gradient(135deg, #0d0d1a 0%, #1a0a2e 50%, #0d0d1a 100%);
+    --header-gradient: linear-gradient(135deg, #1a1a2e 0%, #2d1b69 50%, #1a1a2e 100%);
   }
-  @media (prefers-color-scheme: light) {
+  @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #f0f2f5;
-      --bg-card: #ffffff;
-      --bg-hover: #f8f9fa;
-      --bg-elevated: #ffffff;
-      --text: #1a1a2e;
-      --text-muted: #6b6b80;
-      --text-dim: #a0a0b4;
-      --border: rgba(0,0,0,0.08);
-      --shadow: 0 2px 12px rgba(0,0,0,0.08);
-      --header-gradient: linear-gradient(135deg, #1a1a2e 0%, #2d1b69 50%, #1a1a2e 100%);
-      --accent-glow: rgba(108,92,231,0.12);
+      --bg: #0d0d1a;
+      --bg-card: #16162a;
+      --bg-hover: #1e1e3a;
+      --bg-elevated: #1a1a32;
+      --text: #e8e8f0;
+      --text-muted: #8888a8;
+      --text-dim: #5c5c7a;
+      --border: rgba(255,255,255,0.06);
+      --shadow: 0 2px 16px rgba(0,0,0,0.35);
+      --header-gradient: linear-gradient(135deg, #0d0d1a 0%, #1a0a2e 50%, #0d0d1a 100%);
+      --accent-glow: rgba(108,92,231,0.25);
     }
   }
   *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -565,25 +643,26 @@ function serveAdminPage(env) {
   #login-screen {
     display: flex; align-items: center; justify-content: center;
     min-height: 100vh; padding: 20px;
-    background: var(--header-gradient);
+    background: var(--bg);
   }
   .login-card {
     background: var(--bg-card); border: 1px solid var(--border);
-    padding: 40px 36px; border-radius: 16px;
+    padding: 48px 40px; border-radius: 16px;
     box-shadow: var(--shadow); width: 380px; max-width: 100%;
     text-align: center;
   }
-  .login-icon { font-size: 48px; margin-bottom: 12px; line-height: 1; }
-  .login-card h2 { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
-  .login-desc { color: var(--text-muted); font-size: 14px; margin-bottom: 24px; }
+  .login-icon { font-size: 48px; margin-bottom: 16px; line-height: 1; }
+  .login-card h2 { font-size: 24px; font-weight: 700; margin-bottom: 4px; color: var(--text); }
+  .login-desc { color: var(--text-muted); font-size: 14px; margin-bottom: 28px; }
   .login-error {
     color: var(--danger); font-size: 13px; margin-bottom: 12px;
     display: none; background: rgba(231,76,92,0.1); padding: 8px 12px;
     border-radius: var(--radius-sm);
   }
   .login-error.show { display: block; }
-  .tg-login-container { display: flex; justify-content: center; margin-bottom: 12px; }
+  .tg-login-container { display: flex; justify-content: center; margin-bottom: 16px; }
   .tg-login-container iframe { max-width: 100%; }
+  .tg-login-container + .btn-passkey { margin-top: 12px; }
 
   .btn {
     display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -905,6 +984,9 @@ function serveAdminPage(env) {
     <button class="btn btn-passkey btn-block" id="passkey-login-btn" style="display:none" onclick="loginPassKey()">
       🔑 使用 PassKey 登录
     </button>
+    <button class="btn btn-passkey btn-block" id="register-first-passkey-btn" style="display:none" onclick="registerFirstPassKey()">
+      🔑 注册 PassKey
+    </button>
   </div>
 </div>
 
@@ -1007,7 +1089,18 @@ let selectedNanoids = new Set();
 if (window.PublicKeyCredential) {
   PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then(avail => {
     webauthnAvailable = avail;
-    if (avail) document.getElementById('passkey-login-btn').style.display = 'block';
+    if (avail) {
+      // Check setup status to show the right button
+      fetch('/admin/api/webauthn/setup-status').then(r => r.json()).then(status => {
+        if (status.canRegister) {
+          document.getElementById('register-first-passkey-btn').style.display = 'block';
+        } else {
+          document.getElementById('passkey-login-btn').style.display = 'block';
+        }
+      }).catch(() => {
+        document.getElementById('passkey-login-btn').style.display = 'block';
+      });
+    }
   });
 }
 
@@ -1075,6 +1168,28 @@ async function registerPassKey() {
     else { const d = await resp.json(); showToast('注册失败: ' + (d.error || '未知错误'), 'error'); btn.textContent = '🔑 注册 PassKey'; }
     btn.disabled = false;
     setTimeout(() => { btn.textContent = '🔑 注册 PassKey'; btn.disabled = false; }, 2500);
+  } catch (e) {
+    if (e.name === 'AbortError' || e.name === 'NotAllowedError') { btn.textContent = '🔑 注册 PassKey'; btn.disabled = false; return; }
+    showToast('注册失败', 'error'); btn.textContent = '🔑 注册 PassKey'; btn.disabled = false;
+  }
+}
+
+// ── First-time PassKey registration from login screen ──
+async function registerFirstPassKey() {
+  const btn = document.getElementById('register-first-passkey-btn');
+  btn.disabled = true; btn.textContent = '⏳ 注册中...';
+  try {
+    const beginResp = await fetch('/admin/api/webauthn/register/begin', { method: 'POST' });
+    const options = await beginResp.json();
+    options.challenge = base64ToArray(options.challenge);
+    options.user.id = base64ToArray(options.user.id);
+    const cred = await navigator.credentials.create({ publicKey: options });
+    const resp = await fetch('/admin/api/webauthn/register/complete', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(formatWebAuthnResponse(cred)),
+    });
+    if (resp.ok) { onLoginSuccess(); }
+    else { const d = await resp.json(); showToast('注册失败: ' + (d.error || '未知错误'), 'error'); btn.disabled = false; btn.textContent = '🔑 注册 PassKey'; }
   } catch (e) {
     if (e.name === 'AbortError' || e.name === 'NotAllowedError') { btn.textContent = '🔑 注册 PassKey'; btn.disabled = false; return; }
     showToast('注册失败', 'error'); btn.textContent = '🔑 注册 PassKey'; btn.disabled = false;
