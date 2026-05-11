@@ -10,17 +10,8 @@ export function handleAdminRequest(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
 
-  // Security: requires Telegram login to be configured
-  const hasTelegramLogin = !!env.TELEGRAM_BOT_USERNAME && !!env.BOT_TOKEN;
-  if (!hasTelegramLogin) {
-    if (path === '/admin' || path === '/admin/') {
-      return new Response('Admin panel requires TELEGRAM_BOT_USERNAME and BOT_TOKEN to be configured.', {
-        status: 503,
-        headers: { ...secureHeaders(), 'Content-Type': 'text/plain; charset=utf-8' },
-      });
-    }
-    return new Response('Not found', { status: 404, headers: secureHeaders() });
-  }
+  // PassKey login works without Telegram config — just render the page
+  // Telegram login widget will be hidden if TELEGRAM_BOT_USERNAME is not set
 
   // Serve admin page
   if (path === '/admin' || path === '/admin/') {
@@ -37,6 +28,8 @@ export function handleAdminRequest(request, env) {
     return handleListImages(request, env);
   if (path === '/admin/api/delete' && request.method === 'POST')
     return handleDeleteImage(request, env);
+  if (path === '/admin/api/batch-delete' && request.method === 'POST')
+    return handleBatchDelete(request, env);
 
   // WebAuthn endpoints
   if (path === '/admin/api/webauthn/register/begin' && request.method === 'POST')
@@ -265,6 +258,69 @@ async function handleDeleteImage(request, env) {
   await Promise.all(keysToDelete.map(k => env.IMG_KV.delete(k)));
 
   return new Response(JSON.stringify({ ok: true }), {
+    headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+  });
+}
+
+// --- Batch delete images ---
+
+async function handleBatchDelete(request, env) {
+  const auth = await checkSession(request, env);
+  if (!auth) return unauthorized();
+
+  const ct = request.headers.get('content-type') || '';
+  if (!ct.includes('application/json')) {
+    return new Response(JSON.stringify({ error: 'Bad request' }), {
+      status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
+
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  if (!(await checkRateLimit(env, `admin-batch:${ip}`, 20, 60))) {
+    return new Response(JSON.stringify({ error: 'Too many requests' }), {
+      status: 429, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
+
+  const body = await request.json();
+  const nanoids = body.nanoids;
+  if (!Array.isArray(nanoids) || nanoids.length === 0 || nanoids.length > 50) {
+    return new Response(JSON.stringify({ error: 'Invalid nanoids array (max 50)' }), {
+      status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
+
+  for (const n of nanoids) {
+    if (typeof n !== 'string' || !/^[a-z0-9]{8,32}$/.test(n)) {
+      return new Response(JSON.stringify({ error: 'Invalid nanoid' }), {
+        status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+      });
+    }
+  }
+
+  const results = { deleted: 0, failed: 0 };
+
+  await Promise.all(nanoids.map(async (nanoid) => {
+    try {
+      const imgRef = `img:${nanoid}`;
+      const metadataJson = await env.IMG_KV.get(imgRef);
+      if (!metadataJson) { results.failed++; return; }
+
+      let metadata;
+      try { metadata = JSON.parse(metadataJson); } catch { results.failed++; return; }
+
+      try { await env.IMG_BUCKET.delete(metadata.r2Key); } catch {}
+
+      const keysToDelete = [imgRef];
+      if (metadata.chatId && metadata.messageId) keysToDelete.push(`msg:${metadata.chatId}:${metadata.messageId}`);
+      if (metadata.chatId && metadata.botMessageId) keysToDelete.push(`msg:${metadata.chatId}:${metadata.botMessageId}`);
+      await Promise.all(keysToDelete.map(k => env.IMG_KV.delete(k)));
+
+      results.deleted++;
+    } catch { results.failed++; }
+  }));
+
+  return new Response(JSON.stringify(results), {
     headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
   });
 }
@@ -508,6 +564,12 @@ function serveAdminPage(env) {
     background: transparent; color: var(--text-muted);
   }
   .btn-icon:hover { background: var(--bg-hover); color: var(--text); }
+
+  /* ── Card Selection ── */
+  .card-check { position: absolute; top: 8px; left: 8px; z-index: 3; }
+  .card-check input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; accent-color: var(--accent); }
+  .card.card-selected { box-shadow: 0 0 0 2px var(--accent), var(--shadow); }
+  .card-selected .card-thumb::after { content: ''; position: absolute; inset: 0; background: rgba(108,92,231,0.1); pointer-events: none; z-index: 1; }
 
   /* ── Header ── */
   .header {
@@ -844,6 +906,7 @@ function serveAdminPage(env) {
       <button class="sort-btn active" id="sort-newest" onclick="setSort('newest')">最新</button>
       <button class="sort-btn" id="sort-oldest" onclick="setSort('oldest')">最早</button>
     </div>
+    <button class="btn btn-danger btn-sm" id="batch-delete-btn" style="display:none" onclick="batchDelete()">🗑 删除选中 (<span id="selected-count">0</span>)</button>
     <button class="btn-refresh" onclick="refreshImages()" id="refresh-btn">↻</button>
   </div>
 
@@ -889,6 +952,7 @@ let allImages = [];
 let previewIndex = -1;
 let currentSort = 'newest';
 let searchQuery = '';
+let selectedNanoids = new Set();
 
 // ── WebAuthn check ──
 if (window.PublicKeyCredential) {
@@ -996,6 +1060,58 @@ function arrayToBase64(arr) {
     .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
 }
 
+// ── Card Selection ──
+function onImageCheck(checkbox) {
+  const nanoid = checkbox.dataset.nanoid;
+  const card = checkbox.closest('.card');
+  if (checkbox.checked) {
+    selectedNanoids.add(nanoid);
+    card.classList.add('card-selected');
+  } else {
+    selectedNanoids.delete(nanoid);
+    card.classList.remove('card-selected');
+  }
+  updateBatchDeleteBtn();
+}
+
+function updateBatchDeleteBtn() {
+  const btn = document.getElementById('batch-delete-btn');
+  const count = selectedNanoids.size;
+  document.getElementById('selected-count').textContent = count;
+  btn.style.display = count > 0 ? 'inline-flex' : 'none';
+}
+
+async function batchDelete() {
+  const count = selectedNanoids.size;
+  if (count === 0) return;
+  if (!confirm(`确定删除选中的 ${count} 张图片？此操作不可撤销。`)) return;
+
+  const btn = document.getElementById('batch-delete-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 删除中...';
+
+  try {
+    const resp = await fetch('/admin/api/batch-delete', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ nanoids: [...selectedNanoids] }),
+    });
+    if (resp.ok) {
+      showToast(`已删除 ${count} 张图片`, 'success');
+      selectedNanoids.clear();
+      refreshImages();
+    } else {
+      const d = await resp.json();
+      showToast('批量删除失败: ' + (d.error || ''), 'error');
+      btn.disabled = false;
+      btn.innerHTML = '🗑 删除选中 (<span id="selected-count">' + count + '</span>)';
+    }
+  } catch {
+    showToast('批量删除失败', 'error');
+    btn.disabled = false;
+    btn.innerHTML = '🗑 删除选中 (<span id="selected-count">' + count + '</span>)';
+  }
+}
+
 // ── Image Gallery ──
 async function loadImages() {
   const skel = document.getElementById('skeleton');
@@ -1031,6 +1147,7 @@ function renderImages(images) {
       <div class="card-thumb" onclick="openPreview(\${idx})">
         <img src="\${img.publicUrl}" alt="" loading="lazy">
         <div class="overlay"><span>🔍 预览</span></div>
+        <div class="card-check"><input type="checkbox" class="img-check" data-nanoid="${img.nanoid}" onclick="event.stopPropagation()" onchange="onImageCheck(this)"></div>
       </div>
       <div class="card-body">
         <div class="card-name" title="\${escHtml(img.fileName || img.r2Key)}">\${escHtml(img.fileName || img.r2Key)}</div>
@@ -1119,6 +1236,7 @@ function applyFilter() {
       <div class="card-thumb" onclick="openPreview(\${idx})">
         <img src="\${img.publicUrl}" alt="" loading="lazy">
         <div class="overlay"><span>🔍 预览</span></div>
+        <div class="card-check"><input type="checkbox" class="img-check" data-nanoid="${img.nanoid}" onclick="event.stopPropagation()" onchange="onImageCheck(this)"></div>
       </div>
       <div class="card-body">
         <div class="card-name" title="\${escHtml(img.fileName || img.r2Key)}">\${escHtml(img.fileName || img.r2Key)}</div>
@@ -1140,14 +1258,22 @@ function applyFilter() {
     \`;
     gallery.appendChild(card);
   }
+  // Restore selection state after re-render
+  document.querySelectorAll('.img-check').forEach(cb => {
+    if (selectedNanoids.has(cb.dataset.nanoid)) {
+      cb.checked = true;
+      cb.closest('.card').classList.add('card-selected');
+    }
+  });
   updateLoadMore();
 }
 
 async function refreshImages() {
   const btn = document.getElementById('refresh-btn');
   btn.classList.add('spin');
-  cursor = null; complete = false; allImages = [];
+  cursor = null; complete = false; allImages = []; selectedNanoids.clear();
   document.getElementById('gallery').innerHTML = '';
+  updateBatchDeleteBtn();
   await loadImages();
   setTimeout(() => btn.classList.remove('spin'), 600);
 }
