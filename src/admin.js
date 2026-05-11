@@ -6,6 +6,23 @@ import {
   listCredentials, deleteCredential,
 } from './webauthn.js';
 
+async function handleLogout(request, env) {
+  const cookies = parseCookies(request);
+  const token = cookies.admin_token;
+  if (token) {
+    if (token.startsWith("wa:")) {
+      await env.IMG_KV.delete("wa:session:" + token);
+    } else if (token.startsWith("tg:")) {
+      await env.IMG_KV.delete("session:" + token);
+    }
+  }
+  const resp = new Response(JSON.stringify({ ok: true }), {
+    headers: { ...secureHeaders({ "Content-Type": "application/json" }), ...cspHeaders() },
+  });
+  resp.headers.set("Set-Cookie", "admin_token=; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=0");
+  return resp;
+}
+
 export function handleAdminRequest(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -22,6 +39,8 @@ export function handleAdminRequest(request, env) {
   // Auth API
   if (path === '/admin/api/tg-login' && request.method === 'POST')
     return handleTelegramLogin(request, env);
+  if (path === '/admin/api/logout' && request.method === 'POST')
+    return handleLogout(request, env);
 
   // Image management
   if (path === '/admin/api/images' && request.method === 'GET')
@@ -50,14 +69,6 @@ export function handleAdminRequest(request, env) {
 
 // --- Auth helpers ---
 
-async function generateToken(secret, salt) {
-  const enc = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(secret), 'HMAC', false, ['sign']);
-  const sig = await crypto.subtle.sign('HMAC', keyMaterial, enc.encode(salt));
-  const hex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
-  return 't' + hex.slice(0, 32);
-}
-
 function parseCookies(request) {
   const cookie = request.headers.get('Cookie') || '';
   const result = {};
@@ -70,7 +81,7 @@ function parseCookies(request) {
 
 function isLocalhost(request) {
   const url = new URL(request.url);
-  return url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  return url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1';
 }
 
 async function setSessionCookie(response, token, request) {
@@ -85,15 +96,18 @@ async function checkSession(request, env) {
   const token = cookies.admin_token;
   if (!token) return null;
 
-  // Telegram login session
-  if (env.BOT_TOKEN) {
-    const tgToken = await generateToken(env.BOT_TOKEN, 'tg_admin_v1');
-    if (token === tgToken) return 'telegram';
+  // WebAuthn session
+  if (token.startsWith('wa:')) {
+    const waToken = await env.IMG_KV.get('wa:session:' + token);
+    if (waToken) return 'webauthn';
+    return null;
   }
 
-  // WebAuthn session (stored after PassKey auth)
-  const waToken = token.startsWith('wa:') ? await env.IMG_KV.get(`wa:session:${token}`) : null;
-  if (waToken) return 'webauthn';
+  // Telegram login session (stored in KV with 24h TTL)
+  if (token.startsWith('tg:')) {
+    const tgSession = await env.IMG_KV.get('session:' + token);
+    if (tgSession) return 'telegram';
+  }
 
   return null;
 }
@@ -148,25 +162,24 @@ async function handleTelegramLogin(request, env) {
     });
   }
 
-  // Check user is authorized (must be in ADMIN_USERNAMES or ALLOWED_USERS)
+  // Check user is authorized (admin panel requires ADMIN_USERNAMES)
   const username = (authData.username || '').toLowerCase();
   const admins = parseAllowedUsers(env.ADMIN_USERNAMES);
-  const allowed = parseAllowedUsers(env.ALLOWED_USERS);
 
-  const isAdmin = admins && admins.includes(username);
-  const isAllowed = allowed && allowed.includes(username);
-
-  if (!isAdmin && !isAllowed) {
+  if (!admins || !admins.includes(username)) {
     return new Response(JSON.stringify({ error: 'Not authorized' }), {
       status: 403, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
     });
   }
 
-  const token = await generateToken(env.BOT_TOKEN, 'tg_admin_v1');
+  // Generate random session token stored in KV with 24h TTL
+  const sessionId = 'tg:' + toBase64urlBody(crypto.getRandomValues(new Uint8Array(24)));
+  await env.IMG_KV.put('session:' + sessionId, '1', { expirationTtl: 86400 });
+
   const resp = new Response(JSON.stringify({ ok: true }), {
     headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
   });
-  return await setSessionCookie(resp, token, request);
+  return await setSessionCookie(resp, sessionId, request);
 }
 
 // --- Image listing ---
@@ -254,7 +267,11 @@ async function handleDeleteImage(request, env) {
   // Clean up all KV entries
   const keysToDelete = [imgRef];
   if (metadata.chatId && metadata.messageId) keysToDelete.push(`msg:${metadata.chatId}:${metadata.messageId}`);
-  if (metadata.chatId && metadata.botMessageId) keysToDelete.push(`msg:${metadata.chatId}:${metadata.botMessageId}`);
+  if (metadata.chatId && metadata.botMessageIds) {
+    metadata.botMessageIds.forEach(mid => keysToDelete.push(`msg:${metadata.chatId}:${mid}`));
+  } else if (metadata.chatId && metadata.botMessageId) {
+    keysToDelete.push(`msg:${metadata.chatId}:${metadata.botMessageId}`);
+  }
   await Promise.all(keysToDelete.map(k => env.IMG_KV.delete(k)));
 
   return new Response(JSON.stringify({ ok: true }), {
@@ -313,7 +330,11 @@ async function handleBatchDelete(request, env) {
 
       const keysToDelete = [imgRef];
       if (metadata.chatId && metadata.messageId) keysToDelete.push(`msg:${metadata.chatId}:${metadata.messageId}`);
-      if (metadata.chatId && metadata.botMessageId) keysToDelete.push(`msg:${metadata.chatId}:${metadata.botMessageId}`);
+      if (metadata.chatId && metadata.botMessageIds) {
+        metadata.botMessageIds.forEach(mid => keysToDelete.push(`msg:${metadata.chatId}:${mid}`));
+      } else if (metadata.chatId && metadata.botMessageId) {
+        keysToDelete.push(`msg:${metadata.chatId}:${metadata.botMessageId}`);
+      }
       await Promise.all(keysToDelete.map(k => env.IMG_KV.delete(k)));
 
       results.deleted++;
@@ -331,6 +352,13 @@ async function handleWebAuthnRegisterBegin(request, env) {
   const auth = await checkSession(request, env);
   if (!auth) return unauthorized();
 
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  if (!(await checkRateLimit(env, "admin-reg:" + ip, 10, 60))) {
+    return new Response(JSON.stringify({ error: "Too many requests" }), {
+      status: 429, headers: { ...secureHeaders({ "Content-Type": "application/json" }), ...cspHeaders() },
+    });
+  }
+
   const url = new URL(request.url);
   const domain = url.hostname;
 
@@ -346,6 +374,13 @@ async function handleWebAuthnRegisterBegin(request, env) {
 async function handleWebAuthnRegisterComplete(request, env) {
   const auth = await checkSession(request, env);
   if (!auth) return unauthorized();
+
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  if (!(await checkRateLimit(env, "admin-reg-complete:" + ip, 10, 60))) {
+    return new Response(JSON.stringify({ error: "Too many requests" }), {
+      status: 429, headers: { ...secureHeaders({ "Content-Type": "application/json" }), ...cspHeaders() },
+    });
+  }
 
   const url = new URL(request.url);
   const domain = url.hostname;
@@ -430,6 +465,13 @@ async function handleWebAuthnCredentials(request, env) {
   const auth = await checkSession(request, env);
   if (!auth) return unauthorized();
 
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  if (!(await checkRateLimit(env, "admin-cred:" + ip, 30, 60))) {
+    return new Response(JSON.stringify({ error: "Too many requests" }), {
+      status: 429, headers: { ...secureHeaders({ "Content-Type": "application/json" }), ...cspHeaders() },
+    });
+  }
+
   const credentials = await listCredentials(env);
   return new Response(JSON.stringify({ credentials }), {
     headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
@@ -439,6 +481,13 @@ async function handleWebAuthnCredentials(request, env) {
 async function handleWebAuthnDeleteCredential(request, env) {
   const auth = await checkSession(request, env);
   if (!auth) return unauthorized();
+
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  if (!(await checkRateLimit(env, "admin-cred-del:" + ip, 10, 60))) {
+    return new Response(JSON.stringify({ error: "Too many requests" }), {
+      status: 429, headers: { ...secureHeaders({ "Content-Type": "application/json" }), ...cspHeaders() },
+    });
+  }
 
   const body = await request.json();
   try {
@@ -1159,11 +1208,11 @@ function renderImages(images) {
           \${escHtml(img.uploader || '?')}
         </div>
         <div class="card-actions">
-          <button class="fmt-btn" onclick="copyFormat('\${img.publicUrl}', '\${escHtml(img.fileName || 'image')}', 'url', this)">URL</button>
-          <button class="fmt-btn" onclick="copyFormat('\${img.publicUrl}', '\${escHtml(img.fileName || 'image')}', 'md', this)">MD</button>
-          <button class="fmt-btn" onclick="copyFormat('\${img.publicUrl}', '\${escHtml(img.fileName || 'image')}', 'html', this)">HTML</button>
-          <button class="fmt-btn" onclick="copyFormat('\${img.publicUrl}', '\${escHtml(img.fileName || 'image')}', 'bbcode', this)">BBC</button>
-          <button class="del-btn" onclick="deleteImg('\${img.nanoid}')" title="删除">🗑</button>
+          <button class="fmt-btn" data-url="\${img.publicUrl}" data-name="\${escHtml(img.fileName || 'image')}" data-format="url">URL</button>
+          <button class="fmt-btn" data-url="\${img.publicUrl}" data-name="\${escHtml(img.fileName || 'image')}" data-format="md">MD</button>
+          <button class="fmt-btn" data-url="\${img.publicUrl}" data-name="\${escHtml(img.fileName || 'image')}" data-format="html">HTML</button>
+          <button class="fmt-btn" data-url="\${img.publicUrl}" data-name="\${escHtml(img.fileName || 'image')}" data-format="bbcode">BBC</button>
+          <button class="del-btn" data-nanoid="\${img.nanoid}" title="删除">🗑</button>
         </div>
       </div>
     \`;
@@ -1248,11 +1297,11 @@ function applyFilter() {
           \${escHtml(img.uploader || '?')}
         </div>
         <div class="card-actions">
-          <button class="fmt-btn" onclick="copyFormat('\${img.publicUrl}', '\${escHtml(img.fileName || 'image')}', 'url', this)">URL</button>
-          <button class="fmt-btn" onclick="copyFormat('\${img.publicUrl}', '\${escHtml(img.fileName || 'image')}', 'md', this)">MD</button>
-          <button class="fmt-btn" onclick="copyFormat('\${img.publicUrl}', '\${escHtml(img.fileName || 'image')}', 'html', this)">HTML</button>
-          <button class="fmt-btn" onclick="copyFormat('\${img.publicUrl}', '\${escHtml(img.fileName || 'image')}', 'bbcode', this)">BBC</button>
-          <button class="del-btn" onclick="deleteImg('\${img.nanoid}')" title="删除">🗑</button>
+          <button class="fmt-btn" data-url="\${img.publicUrl}" data-name="\${escHtml(img.fileName || 'image')}" data-format="url">URL</button>
+          <button class="fmt-btn" data-url="\${img.publicUrl}" data-name="\${escHtml(img.fileName || 'image')}" data-format="md">MD</button>
+          <button class="fmt-btn" data-url="\${img.publicUrl}" data-name="\${escHtml(img.fileName || 'image')}" data-format="html">HTML</button>
+          <button class="fmt-btn" data-url="\${img.publicUrl}" data-name="\${escHtml(img.fileName || 'image')}" data-format="bbcode">BBC</button>
+          <button class="del-btn" data-nanoid="\${img.nanoid}" title="删除">🗑</button>
         </div>
       </div>
     \`;
@@ -1348,6 +1397,18 @@ document.addEventListener('keydown', function(e) {
 // Click outside image to close preview
 document.getElementById('preview').addEventListener('click', function(e) {
   if (e.target === this) closePreview();
+});
+
+
+// Delegate clicks on format/delete buttons (eliminates inline onclick XSS)
+document.getElementById('gallery').addEventListener('click', function(e) {
+  const target = e.target.closest('.fmt-btn, .del-btn');
+  if (!target) return;
+  if (target.classList.contains('fmt-btn')) {
+    copyFormat(target.dataset.url, target.dataset.name, target.dataset.format, target);
+  } else if (target.classList.contains('del-btn')) {
+    deleteImg(target.dataset.nanoid);
+  }
 });
 
 // ── Logout ──

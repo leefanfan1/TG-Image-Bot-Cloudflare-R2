@@ -41,9 +41,9 @@ export default {
     }
 
     const allowedUsers = parseAllowedUsers(env.ALLOWED_USERS);
-    const update = await request.json();
 
     try {
+      const update = await request.json();
       await handleUpdate(update, env, allowedUsers);
     } catch (err) {
       console.error('handleUpdate error:', err);
@@ -75,8 +75,8 @@ async function handleUpdate(update, env, allowedUsers) {
     return;
   }
 
-  // Route: Delete command
-  if (msg.text && msg.text === '/delete' && msg.reply_to_message) {
+  // Route: Delete command (in groups, Telegram appends @BotUsername to commands)
+  if (msg.text && msg.reply_to_message && msg.text.split('@')[0] === '/delete') {
     await handleDelete(env, chatId, msg, from);
     return;
   }
@@ -132,6 +132,13 @@ async function handleUpload(env, chatId, msg, from, fileId) {
     return;
   }
 
+  // Size check via Content-Length (when Telegram omits file_size in getFile response)
+  const contentLength = fileResp2.headers.get('Content-Length');
+  if (contentLength && parseInt(contentLength) > MAX_SIZE) {
+    await sendMessage(env.BOT_TOKEN, chatId, `❌ 文件过大（上限 ${MAX_SIZE / 1024 / 1024}MB）。`, msg.message_id);
+    return;
+  }
+
   const fileBuffer = await fileResp2.arrayBuffer();
   const contentType = fileResp2.headers.get('content-type') || 'application/octet-stream';
   const ext = getExtension(contentType);
@@ -167,8 +174,7 @@ async function handleUpload(env, chatId, msg, from, fileId) {
     messageId: msg.message_id,
     timestamp: Date.now(),
   };
-  await env.IMG_KV.put(`img:${nanoid}`, JSON.stringify(metadata));
-
+  // Reverse index saved after bot replies below
   // Save reverse index: user message -> img:nanoid
   await env.IMG_KV.put(`msg:${chatId}:${msg.message_id}`, `img:${nanoid}`);
 
@@ -192,10 +198,11 @@ async function handleUpload(env, chatId, msg, from, fileId) {
       await env.IMG_KV.put(`msg:${chatId}:${resp.result.message_id}`, `img:${nanoid}`);
     }
   }
+  metadata.botMessageIds = botMsgIds;
   if (botMsgIds.length > 0) {
     metadata.botMessageId = botMsgIds[0];
-    await env.IMG_KV.put(`img:${nanoid}`, JSON.stringify(metadata));
   }
+  await env.IMG_KV.put(`img:${nanoid}`, JSON.stringify(metadata));
 }
 
 async function handleDelete(env, chatId, msg, from) {
@@ -242,6 +249,11 @@ async function handleDelete(env, chatId, msg, from) {
   // Delete from KV — clean up both reverse indexes
   const keysToDelete = [imgRef, indexKey];
   if (metadata.messageId) keysToDelete.push(`msg:${chatId}:${metadata.messageId}`);
+  if (metadata.botMessageIds) {
+    metadata.botMessageIds.forEach(mid => keysToDelete.push(`msg:${chatId}:${mid}`));
+  } else if (metadata.botMessageId) {
+    keysToDelete.push(`msg:${chatId}:${metadata.botMessageId}`);
+  }
   await Promise.all(keysToDelete.map(k => env.IMG_KV.delete(k)));
 
   await sendMessage(env.BOT_TOKEN, chatId, '✅ 图片已删除。', msg.message_id);

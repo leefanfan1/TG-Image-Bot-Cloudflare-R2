@@ -273,8 +273,9 @@ export async function completeAuthentication(env, response, domain) {
 
   const stored = JSON.parse(storedJson);
 
-  // Decode clientDataJSON
-  const clientData = JSON.parse(new TextDecoder().decode(fromBase64url(clientResp.clientDataJSON)));
+  // Decode clientDataJSON (keep raw bytes for signature verification per WebAuthn spec)
+  const clientDataJSONBytes = fromBase64url(clientResp.clientDataJSON);
+  const clientData = JSON.parse(new TextDecoder().decode(clientDataJSONBytes));
 
   // Verify type
   if (clientData.type !== 'webauthn.get') {
@@ -305,8 +306,8 @@ export async function completeAuthentication(env, response, domain) {
   // Verify user presence
   if (!parsedAuth.up) throw new Error('User not present');
 
-  // Build signature base string: authenticatorData + SHA-256(clientDataJSON)
-  const clientDataHash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(clientData)));
+  // Build signature base string: authenticatorData + SHA-256(raw clientDataJSON bytes)
+  const clientDataHash = await crypto.subtle.digest('SHA-256', clientDataJSONBytes);
   const sigBase = new Uint8Array(authDataBytes.length + clientDataHash.byteLength);
   sigBase.set(authDataBytes, 0);
   sigBase.set(new Uint8Array(clientDataHash), authDataBytes.length);
