@@ -1156,6 +1156,11 @@ async function registerPassKey() {
   btn.disabled = true; btn.textContent = '⏳ 注册中...';
   try {
     const beginResp = await fetch('/admin/api/webauthn/register/begin', { method: 'POST' });
+    if (!beginResp.ok) {
+      const d = await beginResp.json();
+      showToast('注册失败: ' + (d.error || '无法开始注册'), 'error');
+      btn.disabled = false; btn.textContent = '🔑 注册 PassKey'; return;
+    }
     const options = await beginResp.json();
     options.challenge = base64ToArray(options.challenge);
     options.user.id = base64ToArray(options.user.id);
@@ -1180,6 +1185,11 @@ async function registerFirstPassKey() {
   btn.disabled = true; btn.textContent = '⏳ 注册中...';
   try {
     const beginResp = await fetch('/admin/api/webauthn/register/begin', { method: 'POST' });
+    if (!beginResp.ok) {
+      const d = await beginResp.json();
+      showToast('注册失败: ' + (d.error || '无法开始注册'), 'error');
+      btn.disabled = false; btn.textContent = '🔑 注册 PassKey'; return;
+    }
     const options = await beginResp.json();
     options.challenge = base64ToArray(options.challenge);
     options.user.id = base64ToArray(options.user.id);
