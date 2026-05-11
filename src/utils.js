@@ -27,11 +27,27 @@ const MIME_EXT = {
   // SVG intentionally excluded — see VALID_MIME_TYPES below
 };
 
+// Reverse map: extension → MIME type
+const EXT_MIME = {};
+for (const [mime, ext] of Object.entries(MIME_EXT)) {
+  EXT_MIME[ext] = mime;
+}
+
 // Supported image MIME types — SVG excluded to prevent XSS via embedded scripts
 const VALID_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/tiff', 'image/avif'];
 
 export function getExtension(mimeType) {
   return MIME_EXT[mimeType] || 'bin';
+}
+
+// Detect MIME type from Telegram file path or response header.
+// The file path extension is more reliable than Telegram's file server content-type header.
+export function detectMimeType(filePath, responseContentType) {
+  const ext = filePath.split('.').pop()?.toLowerCase();
+  if (ext && EXT_MIME[ext]) return EXT_MIME[ext];
+  // Fallback to response header
+  if (responseContentType && isValidImageMime(responseContentType)) return responseContentType;
+  return 'application/octet-stream';
 }
 
 export function isValidImageMime(mimeType) {

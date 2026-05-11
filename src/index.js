@@ -1,7 +1,7 @@
 import {
   generateId, getExtension, buildTelegramUrl,
   parseAllowedUsers, isAllowedUser, checkRateLimit,
-  verifyWebhookSecret, isValidImageMime, secureHeaders,
+  verifyWebhookSecret, isValidImageMime, secureHeaders, detectMimeType,
 } from './utils.js';
 import { handleAdminRequest } from './admin.js';
 
@@ -142,7 +142,8 @@ async function handleUpload(env, chatId, msg, from, fileId) {
   }
 
   const fileBuffer = await fileResp2.arrayBuffer();
-  const contentType = fileResp2.headers.get('content-type') || 'application/octet-stream';
+  const responseContentType = fileResp2.headers.get('content-type') || 'application/octet-stream';
+  const contentType = detectMimeType(filePath, responseContentType);
   const ext = getExtension(contentType);
 
   // Reject non-image or unknown types
