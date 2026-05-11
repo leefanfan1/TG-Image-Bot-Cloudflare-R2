@@ -107,7 +107,7 @@ export function cspHeaders() {
       "default-src 'self'; "
       + "img-src 'self' https:; "
       + "style-src 'self' 'unsafe-inline'; "
-      + "script-src 'self' 'unsafe-inline' https://telegram.org; "
+      + "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://telegram.org; "
       + "connect-src 'self'; "
       + "form-action 'self'; "
       + "frame-src https://telegram.org;",

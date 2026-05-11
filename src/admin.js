@@ -593,7 +593,7 @@ function serveAdminPage(env) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://telegram.org; connect-src 'self'; form-action 'self'; frame-src https://telegram.org;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://telegram.org; connect-src 'self'; form-action 'self'; frame-src https://telegram.org;">
 <title>图床管理</title>
 <style>
   :root {
@@ -1217,9 +1217,12 @@ function onLoginSuccess() {
 // ── WebAuthn Helpers ──
 function formatWebAuthnResponse(cred) {
   const response = {};
-  for (const [key, val] of Object.entries(cred.response)) {
-    response[key] = val instanceof ArrayBuffer ? arrayToBase64(val) : val;
-  }
+  if (cred.response.clientDataJSON) response.clientDataJSON = arrayToBase64(cred.response.clientDataJSON);
+  if (cred.response.attestationObject) response.attestationObject = arrayToBase64(cred.response.attestationObject);
+  if (cred.response.authenticatorData) response.authenticatorData = arrayToBase64(cred.response.authenticatorData);
+  if (cred.response.signature) response.signature = arrayToBase64(cred.response.signature);
+  if (cred.response.userHandle) response.userHandle = arrayToBase64(cred.response.userHandle);
+  if (cred.response.transports) response.transports = cred.response.transports;
   return { id: cred.id, rawId: arrayToBase64(cred.rawId), type: cred.type, response };
 }
 function base64ToArray(str) {
