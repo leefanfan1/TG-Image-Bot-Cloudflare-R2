@@ -34,9 +34,10 @@ PUBLIC_URL = "https://你的R2域名"
 # Telegram Bot 用户名（不要 @），用于管理面板 Telegram 登录
 # 例: TELEGRAM_BOT_USERNAME = "myimagebot"
 TELEGRAM_BOT_USERNAME = "你的Bot用户名"
-# Worker 域名（仅当 Bot 域名 ≠ R2 域名时需配置，解决 Bot /login 链接 404）
-# 例: ADMIN_URL = "https://你的Worker域名.workers.dev"
-ADMIN_URL = "https://你的Worker域名.workers.dev"
+# Worker 域名（仅当使用自定义域名且域名 ≠ Worker 域名时需配置）
+# 留空时自动使用 Worker 自身域名
+# 例: ADMIN_URL = "https://admin.example.com"
+ADMIN_URL = ""
 
 # ═══════════════════════════════════════════
 # Secret (通过 wrangler secret put 设置，不要写在文件里)

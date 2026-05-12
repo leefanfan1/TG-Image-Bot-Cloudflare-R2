@@ -44,7 +44,8 @@ export default {
 
     try {
       const update = await request.json();
-      await handleUpdate(update, env, allowedUsers);
+      const workerOrigin = new URL(request.url).origin;
+      await handleUpdate(update, env, allowedUsers, workerOrigin);
     } catch (err) {
       console.error('handleUpdate error:', err);
     }
@@ -53,7 +54,7 @@ export default {
   },
 };
 
-async function handleUpdate(update, env, allowedUsers) {
+async function handleUpdate(update, env, allowedUsers, workerOrigin) {
   const msg = update.message;
   if (!msg || !msg.from) return;
 
@@ -78,7 +79,7 @@ async function handleUpdate(update, env, allowedUsers) {
   // Route: Login command (private chat only, prevents leaking links in groups)
   if (msg.text && msg.text.split('@')[0] === '/login') {
     if (msg.chat.type !== 'private') return;
-    await handleLoginCommand(env, chatId, msg, from);
+    await handleLoginCommand(env, chatId, msg, from, workerOrigin);
     return;
   }
 
@@ -224,17 +225,21 @@ async function handleUpload(env, chatId, msg, from, fileId) {
   await env.IMG_KV.put(`img:${nanoid}`, JSON.stringify(metadata));
 }
 
-async function handleLoginCommand(env, chatId, msg, from) {
+async function handleLoginCommand(env, chatId, msg, from, workerOrigin) {
   const admins = parseAllowedUsers(env.ADMIN_USERNAMES);
   if (!admins || !admins.includes(from.username)) {
     await sendMessage(env.BOT_TOKEN, chatId, '❌ 你没有管理员权限。', msg.message_id);
     return;
   }
 
-  const adminUrl = (env.ADMIN_URL || env.PUBLIC_URL).replace(/\/+$/, '');
+  const token = await generateId(24);
+  await env.IMG_KV.put(`login_token:${token}`, from.username, { expirationTtl: 300 });
+
+  const adminUrl = (env.ADMIN_URL || workerOrigin).replace(/\/+$/, '');
+  const loginUrl = `${adminUrl}/admin?login_token=${token}`;
   await sendMessage(env.BOT_TOKEN, chatId,
-    `🔑 请打开管理面板，点击「使用 Telegram 登录」按钮即可登录\n\n${adminUrl}/admin`,
-    msg.message_id);
+    `🔑 登录管理面板\n\n${loginUrl}\n\n链接5分钟内有效，打开后自动登录。`,
+    msg.message_id, null);
 }
 
 async function handleDelete(env, chatId, msg, from) {
