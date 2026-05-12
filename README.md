@@ -124,7 +124,7 @@ https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=https://<Worker域名>/we
 
 > Telegram 登录 → 注册 PassKey → 以后可任选其一
 
-1. 页面显示 **Telegram 登录** 按钮（以及通过 Bot 发 `/login` 的方式）
+1. 页面显示 **Telegram 登录** 按钮
 2. 必须先通过 Telegram 登录（验证 `ADMIN_USERNAMES` 中的白名单）
 3. 登录后进入管理面板，可通过顶栏 **添加 PassKey** 注册生物识别/硬件密钥
 4. 以后再次登录，可以选 **Telegram 登录** 或 **PassKey 登录**
@@ -144,7 +144,6 @@ https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=https://<Worker域名>/we
 | 方式 | 说明 |
 |------|------|
 | **Telegram 登录** | 点击按钮，优先唤醒 Telegram App 授权；未安装 App 时 2 秒后自动回退网页 OAuth |
-| **通过 Bot 登录** | 向 Bot 发送 `/login`，Bot 回复一次性的登录链接，点击即可登录 |
 | **PassKey 登录** | 首次需通过以上方式认证后注册，后续可用指纹/面部识别/硬件密钥 |
 
 ### 账号管理
@@ -191,8 +190,7 @@ Bot  → [消息 3] <img src="https://img.example.com/uploads/abc123.jpg" alt=""
 
 ### 登录管理面板
 
-- **直接登录**：打开管理面板，点击 **Telegram 登录**
-- **通过 Bot 登录**：向 Bot 发送 `/login`，Bot 回复一次性链接，点击自动登录
+打开管理面板，点击 **Telegram 登录** 按钮即可。
 
 ---
 
