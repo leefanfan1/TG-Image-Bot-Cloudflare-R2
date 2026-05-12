@@ -16,6 +16,16 @@ export async function generateId(length = 12) {
   return id;
 }
 
+// Generate timestamp + short random suffix storage key
+export async function generateStorageKey(ext) {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  const rand = await generateId(8);
+  return `uploads/${y}-${m}-${d}_${rand}.${ext}`;
+}
+
 const MIME_EXT = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
@@ -52,6 +62,57 @@ export function detectMimeType(filePath, responseContentType) {
 
 export function isValidImageMime(mimeType) {
   return VALID_MIME_TYPES.some(m => mimeType === m);
+}
+
+// Magic bytes for image format validation
+const MAGIC_BYTES = {
+  jpg:  [0xFF, 0xD8, 0xFF],
+  png:  [0x89, 0x50, 0x4E, 0x47],
+  gif:  [0x47, 0x49, 0x46, 0x38],
+  bmp:  [0x42, 0x4D],
+};
+
+export function isValidImageContent(buffer, ext) {
+  if (buffer.byteLength < 4) return false;
+  const bytes = new Uint8Array(buffer);
+
+  // Check formats with fixed headers
+  const sig = MAGIC_BYTES[ext];
+  if (sig) {
+    for (let i = 0; i < sig.length; i++) {
+      if (bytes[i] !== sig[i]) return false;
+    }
+    return true;
+  }
+
+  // WebP: RIFF + .... + WEBP
+  if (ext === 'webp') {
+    if (buffer.byteLength < 12) return false;
+    if (bytes[0] !== 0x52 || bytes[1] !== 0x49 || bytes[2] !== 0x46 || bytes[3] !== 0x46) return false;
+    if (bytes[8] !== 0x57 || bytes[9] !== 0x45 || bytes[10] !== 0x42 || bytes[11] !== 0x50) return false;
+    return true;
+  }
+
+  // TIFF: little-endian (II) or big-endian (MM)
+  if (ext === 'tiff') {
+    if (buffer.byteLength < 4) return false;
+    return (bytes[0] === 0x49 && bytes[1] === 0x49 && bytes[2] === 0x2A && bytes[3] === 0x00)
+        || (bytes[0] === 0x4D && bytes[1] === 0x4D && bytes[2] === 0x00 && bytes[3] === 0x2A);
+  }
+
+  // AVIF/AVIS: ISO BMFF container with ftyp box
+  if (ext === 'avif') {
+    if (buffer.byteLength < 12) return false;
+    for (let i = 0; i <= buffer.byteLength - 12; i++) {
+      if (bytes[i+4] === 0x66 && bytes[i+5] === 0x74 && bytes[i+6] === 0x79 && bytes[i+7] === 0x70) {
+        const brand = String.fromCharCode(bytes[i+8], bytes[i+9], bytes[i+10], bytes[i+11]);
+        if (brand === 'avif' || brand === 'avis') return true;
+      }
+    }
+    return false;
+  }
+
+  return true; // unknown extension, skip check
 }
 
 export function buildTelegramUrl(token, method) {
@@ -122,7 +183,7 @@ export function cspHeaders() {
       "default-src 'self'; "
       + "img-src 'self' https:; "
       + "style-src 'self' 'unsafe-inline'; "
-      + "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://telegram.org; "
+      + "script-src 'self' 'unsafe-inline' https://telegram.org; "
       + "frame-src https://oauth.telegram.org; "
       + "connect-src 'self' https://static.cloudflareinsights.com; "
       + "form-action 'self';",

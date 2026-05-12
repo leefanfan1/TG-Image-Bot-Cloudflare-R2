@@ -1,5 +1,5 @@
 // Web management dashboard for the image bed
-import { checkRateLimit, secureHeaders, cspHeaders, parseAllowedUsers, generateId, getExtension, isValidImageMime } from './utils.js';
+import { checkRateLimit, secureHeaders, cspHeaders, parseAllowedUsers, generateId, getExtension, isValidImageMime, generateStorageKey, isValidImageContent } from './utils.js';
 import {
   beginRegistration, completeRegistration,
   beginAuthentication, completeAuthentication,
@@ -23,7 +23,7 @@ async function handleLogout(request, env) {
   return resp;
 }
 
-export function handleAdminRequest(request, env) {
+export async function handleAdminRequest(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
 
@@ -35,7 +35,7 @@ export function handleAdminRequest(request, env) {
       if (loginToken) {
         return handleLoginToken(env, loginToken, request);
       }
-      return serveAdminPage(env);
+      return await serveAdminPage(env);
     }
     return new Response('Method not allowed', { status: 405, headers: secureHeaders() });
   }
@@ -441,8 +441,16 @@ async function handleAdminUpload(request, env) {
 
   const fileBuffer = await file.arrayBuffer();
   const ext = getExtension(file.type);
-  const nanoid = await generateId();
-  const r2Key = `uploads/${nanoid}.${ext}`;
+
+  // Verify file content matches the declared format
+  if (!isValidImageContent(fileBuffer, ext)) {
+    return new Response(JSON.stringify({ error: '文件内容不匹配或已损坏' }), {
+      status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
+
+  const nanoid = await generateId(8);
+  const r2Key = await generateStorageKey(ext);
 
   await env.IMG_BUCKET.put(r2Key, fileBuffer, {
     httpMetadata: { contentType: file.type },
@@ -791,10 +799,14 @@ async function handleLoginToken(env, loginToken, request) {
 //  Admin HTML page (clean & minimal design)
 // ============================================================
 
-function serveAdminPage(env) {
+async function serveAdminPage(env) {
   const hasTelegramLogin = !!env.TELEGRAM_BOT_USERNAME;
   const botUsername = (env.TELEGRAM_BOT_USERNAME || '').replace(/[^a-zA-Z0-9_]/g, '');
   const botId = hasTelegramLogin && env.BOT_TOKEN ? env.BOT_TOKEN.split(':')[0] : '';
+
+  // Check if any PassKey credentials already exist
+  const existingCreds = await env.IMG_KV.list({ prefix: 'wa:cred:' });
+  const hasPassKey = existingCreds.keys.length > 0;
 
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -874,6 +886,7 @@ function serveAdminPage(env) {
   }
   .login-card h2 { font-size: 22px; font-weight: 600; margin-bottom: 4px; }
   .login-desc { color: var(--text-secondary); font-size: 14px; margin-bottom: 24px; }
+  .login-hint { color: var(--text-muted); font-size: 13px; margin-bottom: 16px; line-height: 1.5; }
   .login-error {
     color: var(--danger); font-size: 13px; margin-bottom: 12px;
     display: none; background: var(--danger-bg); padding: 8px 12px;
@@ -1165,13 +1178,14 @@ function serveAdminPage(env) {
     <div class="login-error" id="login-error"></div>
 
     ${hasTelegramLogin ? `
+    ${!hasPassKey ? '<p class="login-hint">首次使用须先通过 Telegram 登录，之后可在面板内添加 Passkey 用于后续登录</p>' : ''}
     <div class="tg-login-widget-wrap">
       <script async src="https://telegram.org/js/telegram-widget.js" data-telegram-login="${botUsername}" data-size="large" data-onauth="onTelegramAuth(user)" data-request-access="write"></script>
     </div>
     <div class="login-divider">或</div>` : ''}
 
-    <button class="btn btn-passkey btn-block" id="passkey-login-btn" style="display:none" onclick="loginPassKey()">使用 PassKey 登录</button>
-    <button class="btn btn-passkey btn-block" id="register-first-passkey-btn" style="display:none" onclick="registerFirstPassKey()">注册 PassKey</button>
+    <button class="btn btn-passkey btn-block" id="passkey-login-btn" style="display:none" onclick="loginPassKey()">使用 Passkey 登录</button>
+    <button class="btn btn-passkey btn-block" id="register-first-passkey-btn" style="display:none" onclick="registerFirstPassKey()">注册 Passkey</button>
   </div>
 </div>
 
@@ -1185,7 +1199,7 @@ function serveAdminPage(env) {
         <h1>图床管理</h1>
       </div>
       <div class="header-actions">
-        <button class="btn btn-ghost btn-sm" id="register-passkey-btn" style="display:none" onclick="registerPassKey()">添加 PassKey</button>
+        <button class="btn btn-ghost btn-sm" id="register-passkey-btn" style="display:none" onclick="registerPassKey()">添加 Passkey</button>
         <button class="btn btn-ghost btn-sm" onclick="showUpload()">上传</button>
         <button class="btn btn-ghost btn-sm" onclick="showSettings()">设置</button>
         <button class="btn btn-ghost btn-sm" onclick="exportUrls()">导出</button>
@@ -1246,7 +1260,7 @@ function serveAdminPage(env) {
     </div>
     <div class="modal-body">
       <div class="modal-section">
-        <h4>PassKey 管理</h4>
+        <h4>Passkey 管理</h4>
         <div id="credential-list">
           <p class="modal-empty">加载中...</p>
         </div>
@@ -1254,7 +1268,7 @@ function serveAdminPage(env) {
       <div class="modal-section">
         <h4>危险操作</h4>
         <div class="danger-zone">
-          <p>删除账号将清除所有 PassKey 凭证和登录会话，此操作不可撤销。</p>
+          <p>删除账号将清除所有 Passkey 凭证和登录会话，此操作不可撤销。</p>
           <button class="btn btn-danger btn-sm" onclick="deleteAccount()">删除账号</button>
         </div>
       </div>
@@ -1398,7 +1412,7 @@ async function loginPassKey() {
     else { const d = await resp.json(); err.textContent = d.error || '认证失败'; err.classList.add('show'); }
   } catch (e) {
     if (e.name === 'NotAllowedError') return;
-    err.textContent = 'PassKey 认证失败'; err.classList.add('show');
+    err.textContent = 'Passkey 认证失败'; err.classList.add('show');
   }
 }
 
@@ -1411,7 +1425,7 @@ async function registerPassKey() {
     if (!beginResp.ok) {
       const d = await beginResp.json();
       showToast('注册失败: ' + (d.error || '无法开始注册'), 'error');
-      btn.disabled = false; btn.textContent = '添加 PassKey'; return;
+      btn.disabled = false; btn.textContent = '添加 Passkey'; return;
     }
     const options = await beginResp.json();
     options.challenge = base64ToArray(options.challenge);
@@ -1421,13 +1435,13 @@ async function registerPassKey() {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(formatWebAuthnResponse(cred)),
     });
-    if (resp.ok) { showToast('PassKey 注册成功', 'success'); btn.textContent = '已注册'; }
-    else { const d = await resp.json(); showToast('注册失败: ' + (d.error || '未知错误'), 'error'); btn.textContent = '添加 PassKey'; }
+    if (resp.ok) { showToast('Passkey 注册成功', 'success'); btn.textContent = '已注册'; }
+    else { const d = await resp.json(); showToast('注册失败: ' + (d.error || '未知错误'), 'error'); btn.textContent = '添加 Passkey'; }
     btn.disabled = false;
-    setTimeout(() => { btn.textContent = '添加 PassKey'; btn.disabled = false; }, 2500);
+    setTimeout(() => { btn.textContent = '添加 Passkey'; btn.disabled = false; }, 2500);
   } catch (e) {
-    if (e.name === 'AbortError' || e.name === 'NotAllowedError') { btn.textContent = '添加 PassKey'; btn.disabled = false; return; }
-    showToast('注册失败', 'error'); btn.textContent = '添加 PassKey'; btn.disabled = false;
+    if (e.name === 'AbortError' || e.name === 'NotAllowedError') { btn.textContent = '添加 Passkey'; btn.disabled = false; return; }
+    showToast('注册失败', 'error'); btn.textContent = '添加 Passkey'; btn.disabled = false;
   }
 }
 
@@ -1440,7 +1454,7 @@ async function registerFirstPassKey() {
     if (!beginResp.ok) {
       const d = await beginResp.json();
       showToast('注册失败: ' + (d.error || '无法开始注册'), 'error');
-      btn.disabled = false; btn.textContent = '注册 PassKey'; return;
+      btn.disabled = false; btn.textContent = '注册 Passkey'; return;
     }
     const options = await beginResp.json();
     options.challenge = base64ToArray(options.challenge);
@@ -1451,10 +1465,10 @@ async function registerFirstPassKey() {
       body: JSON.stringify(formatWebAuthnResponse(cred)),
     });
     if (resp.ok) { onLoginSuccess(); }
-    else { const d = await resp.json(); showToast('注册失败: ' + (d.error || '未知错误'), 'error'); btn.disabled = false; btn.textContent = '注册 PassKey'; }
+    else { const d = await resp.json(); showToast('注册失败: ' + (d.error || '未知错误'), 'error'); btn.disabled = false; btn.textContent = '注册 Passkey'; }
   } catch (e) {
-    if (e.name === 'AbortError' || e.name === 'NotAllowedError') { btn.textContent = '注册 PassKey'; btn.disabled = false; return; }
-    showToast('注册失败', 'error'); btn.textContent = '注册 PassKey'; btn.disabled = false;
+    if (e.name === 'AbortError' || e.name === 'NotAllowedError') { btn.textContent = '注册 Passkey'; btn.disabled = false; return; }
+    showToast('注册失败', 'error'); btn.textContent = '注册 Passkey'; btn.disabled = false;
   }
 }
 
@@ -1486,7 +1500,7 @@ function base64ToArray(str) {
 }
 function arrayToBase64(arr) {
   return btoa(String.fromCharCode(...new Uint8Array(arr)))
-    .replace(/\\+/g, '-').replace(/\\/g, '_').replace(/=+$/, '');
+    .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
 }
 
 // Card Selection
@@ -1783,7 +1797,7 @@ async function loadCredentials() {
     if (!resp.ok) { list.innerHTML = '<p class="modal-empty">加载失败</p>'; return; }
     const data = await resp.json();
     if (!data.credentials || data.credentials.length === 0) {
-      list.innerHTML = '<p class="modal-empty">暂无已注册的 PassKey</p>';
+      list.innerHTML = '<p class="modal-empty">暂无已注册的 Passkey</p>';
       return;
     }
     list.innerHTML = '';
@@ -1793,7 +1807,7 @@ async function loadCredentials() {
       const date = cred.createdAt ? new Date(cred.createdAt).toLocaleString('zh-CN') : '未知';
       const info = document.createElement('div');
       info.className = 'cred-info';
-      info.innerHTML = 'PassKey<div class="cred-date">注册于 ' + date + '</div>';
+      info.innerHTML = 'Passkey<div class="cred-date">注册于 ' + date + '</div>';
       const delBtn = document.createElement('button');
       delBtn.className = 'btn btn-danger btn-sm';
       delBtn.textContent = '删除';
@@ -1807,7 +1821,7 @@ async function loadCredentials() {
 }
 
 async function deleteCredential(credId) {
-  if (!confirm('确定删除此 PassKey？')) return;
+  if (!confirm('确定删除此 Passkey？')) return;
   try {
     const resp = await fetch('/admin/api/webauthn/credentials/delete', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1819,7 +1833,7 @@ async function deleteCredential(credId) {
 }
 
 async function deleteAccount() {
-  if (!confirm('确定删除整个账号？所有 PassKey 凭证和登录会话将被清除。')) return;
+  if (!confirm('确定删除整个账号？所有 Passkey 凭证和登录会话将被清除。')) return;
   if (!confirm('此操作不可撤销！确定要继续？')) return;
   try {
     const resp = await fetch('/admin/api/delete-account', { method: 'POST' });

@@ -2,6 +2,7 @@ import {
   generateId, getExtension, buildTelegramUrl,
   parseAllowedUsers, isAllowedUser, checkRateLimit,
   verifyWebhookSecret, isValidImageMime, secureHeaders, detectMimeType,
+  generateStorageKey, isValidImageContent,
 } from './utils.js';
 import { handleAdminRequest } from './admin.js';
 
@@ -11,7 +12,7 @@ export default {
 
     // Route: admin dashboard
     if (url.pathname.startsWith('/admin')) {
-      return handleAdminRequest(request, env);
+      return await handleAdminRequest(request, env);
     }
 
     // Route: serve uploaded images from R2 (when Worker is on the custom domain)
@@ -132,7 +133,9 @@ async function handleUpload(env, chatId, msg, from, fileId) {
   const filePath = fileData.result.file_path;
   // Telegram does not preserve original filename for photo messages;
   // for documents the original name is available via msg.document.file_name
-  const fileName = msg.document?.file_name || 'image';
+  const now = new Date();
+  const fileName = msg.document?.file_name
+    || `photo_${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}-${String(now.getMinutes()).padStart(2,'0')}-${String(now.getSeconds()).padStart(2,'0')}`;
 
   // Enforce max file size: Telegram reports file_size in getFile response
   // Max 50MB to stay well within Worker limits
@@ -153,7 +156,7 @@ async function handleUpload(env, chatId, msg, from, fileId) {
 
   // Size check via Content-Length (when Telegram omits file_size in getFile response)
   const contentLength = fileResp2.headers.get('Content-Length');
-  if (contentLength && parseInt(contentLength) > MAX_SIZE) {
+  if (contentLength && parseInt(contentLength, 10) > MAX_SIZE) {
     await sendMessage(env.BOT_TOKEN, chatId, `❌ 文件过大（上限 ${MAX_SIZE / 1024 / 1024}MB）。`, msg.message_id);
     return;
   }
@@ -169,8 +172,14 @@ async function handleUpload(env, chatId, msg, from, fileId) {
     return;
   }
 
+  // Verify file content matches the declared format
+  if (!isValidImageContent(fileBuffer, ext)) {
+    await sendMessage(env.BOT_TOKEN, chatId, '❌ 文件内容不匹配或已损坏。', msg.message_id);
+    return;
+  }
+
   const nanoid = await generateId();
-  const r2Key = `uploads/${nanoid}.${ext}`;
+  const r2Key = await generateStorageKey(ext);
 
   // Upload to R2
   await env.IMG_BUCKET.put(r2Key, fileBuffer, {
