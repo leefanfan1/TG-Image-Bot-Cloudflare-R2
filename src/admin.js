@@ -27,9 +27,6 @@ export function handleAdminRequest(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
 
-  // PassKey login works without Telegram config — just render the page
-  // Telegram login widget will be hidden if TELEGRAM_BOT_USERNAME is not set
-
   // Serve admin page
   if (path === '/admin' || path === '/admin/') {
     if (request.method === 'GET') return serveAdminPage(env);
@@ -37,6 +34,8 @@ export function handleAdminRequest(request, env) {
   }
 
   // Auth API
+  if (path === '/admin/api/check-session' && request.method === 'GET')
+    return handleCheckSession(request, env);
   if (path === '/admin/api/tg-login' && request.method === 'POST')
     return handleTelegramLogin(request, env);
   if (path === '/admin/api/logout' && request.method === 'POST')
@@ -117,6 +116,15 @@ async function checkSession(request, env) {
 function unauthorized() {
   return new Response(JSON.stringify({ error: 'Unauthorized' }), {
     status: 401,
+    headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+  });
+}
+
+// --- Session Check ---
+
+async function handleCheckSession(request, env) {
+  const auth = await checkSession(request, env);
+  return new Response(JSON.stringify({ authenticated: !!auth, method: auth }), {
     headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
   });
 }
@@ -372,7 +380,6 @@ async function handleBatchDelete(request, env) {
 // --- WebAuthn Registration ---
 
 async function handleWebAuthnRegisterBegin(request, env) {
-  // Only allow first-time bootstrap without auth; subsequent registrations require login
   const existing = await env.IMG_KV.list({ prefix: 'wa:cred:' });
   if (existing.keys.length > 0) {
     const auth = await checkSession(request, env);
@@ -390,7 +397,6 @@ async function handleWebAuthnRegisterBegin(request, env) {
   const domain = url.hostname;
 
   const options = await beginRegistration(domain);
-  // Store challenge for verification
   await env.IMG_KV.put(`wa:reg:${options.challenge}`, 'pending', { expirationTtl: 300 });
 
   return new Response(JSON.stringify(options), {
@@ -399,7 +405,6 @@ async function handleWebAuthnRegisterBegin(request, env) {
 }
 
 async function handleWebAuthnRegisterComplete(request, env) {
-  // Only allow first-time bootstrap without auth; subsequent registrations require login
   const existing = await env.IMG_KV.list({ prefix: 'wa:cred:' });
   if (existing.keys.length > 0) {
     const auth = await checkSession(request, env);
@@ -581,11 +586,11 @@ async function handleWebAuthnSetupStatus(request, env) {
 }
 
 // ============================================================
-//  Admin HTML page (rendered inline)
+//  Admin HTML page (clean & minimal design)
 // ============================================================
 
 function serveAdminPage(env) {
-  const hasTelegramLogin = !!env.TELEGRAM_BOT_USERNAME && !!env.BOT_TOKEN;
+  const hasTelegramLogin = !!env.TELEGRAM_BOT_USERNAME;
   const botUsername = (env.TELEGRAM_BOT_USERNAME || '').replace(/[^a-zA-Z0-9_]/g, '');
 
   const html = `<!DOCTYPE html>
@@ -597,378 +602,300 @@ function serveAdminPage(env) {
 <title>图床管理</title>
 <style>
   :root {
-    --bg: #f0f2f5;
-    --bg-card: #ffffff;
-    --bg-hover: #f8f9fa;
-    --bg-elevated: #ffffff;
-    --text: #1a1a2e;
-    --text-muted: #6b6b80;
-    --text-dim: #a0a0b4;
-    --accent: #6c5ce7;
-    --accent-hover: #7d6ff0;
-    --accent-glow: rgba(108,92,231,0.12);
-    --danger: #e74c5c;
-    --danger-hover: #c0394b;
-    --success: #2ecc71;
-    --border: rgba(0,0,0,0.08);
-    --radius: 10px;
-    --radius-sm: 6px;
-    --shadow: 0 2px 12px rgba(0,0,0,0.08);
-    --transition: 0.2s ease;
-    --header-gradient: linear-gradient(135deg, #1a1a2e 0%, #2d1b69 50%, #1a1a2e 100%);
+    --bg: #f4f5f7;
+    --card-bg: #fff;
+    --text: #202124;
+    --text-secondary: #5f6368;
+    --text-muted: #9aa0a6;
+    --border: #dadce0;
+    --primary: #1a73e8;
+    --primary-hover: #1557b0;
+    --primary-bg: #e8f0fe;
+    --danger: #d93025;
+    --danger-bg: #fce8e6;
+    --success: #188038;
+    --shadow: 0 1px 3px rgba(0,0,0,0.1);
+    --radius: 8px;
+    --radius-sm: 4px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0d0d1a;
-      --bg-card: #16162a;
-      --bg-hover: #1e1e3a;
-      --bg-elevated: #1a1a32;
-      --text: #e8e8f0;
-      --text-muted: #8888a8;
-      --text-dim: #5c5c7a;
-      --border: rgba(255,255,255,0.06);
-      --shadow: 0 2px 16px rgba(0,0,0,0.35);
-      --header-gradient: linear-gradient(135deg, #0d0d1a 0%, #1a0a2e 50%, #0d0d1a 100%);
-      --accent-glow: rgba(108,92,231,0.25);
+      --bg: #1e1e1e;
+      --card-bg: #2d2d2d;
+      --text: #e8eaed;
+      --text-secondary: #9aa0a6;
+      --text-muted: #6b7280;
+      --border: #3c4043;
+      --primary: #8ab4f8;
+      --primary-hover: #aecbfa;
+      --primary-bg: #1a3c5a;
+      --danger: #f28b82;
+      --danger-bg: #3c1a1a;
+      --success: #81c995;
+      --shadow: 0 1px 3px rgba(0,0,0,0.3);
     }
   }
-  *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans SC', sans-serif;
-    background: var(--bg); color: var(--text); min-height: 100vh;
-    -webkit-font-smoothing: antialiased;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh; -webkit-font-smoothing: antialiased; font-size: 14px;
   }
 
-  /* ── Login Screen ── */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+    padding: 8px 16px; border: none; border-radius: var(--radius-sm);
+    font-size: 13px; font-weight: 500; cursor: pointer;
+    text-decoration: none; white-space: nowrap; user-select: none;
+    transition: background 0.15s;
+  }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-danger { background: var(--danger); color: #fff; }
+  .btn-danger:hover { background: #b3261e; }
+  .btn-ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
+  .btn-ghost:hover { background: var(--primary-bg); color: var(--primary); border-color: var(--primary); }
+  .btn-sm { padding: 6px 12px; font-size: 12px; }
+  .btn-block { width: 100%; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Login Screen */
   #login-screen {
     display: flex; align-items: center; justify-content: center;
     min-height: 100vh; padding: 20px;
-    background: var(--bg);
   }
   .login-card {
-    background: var(--bg-card); border: 1px solid var(--border);
-    padding: 48px 40px; border-radius: 16px;
-    box-shadow: var(--shadow); width: 380px; max-width: 100%;
-    text-align: center;
+    background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow);
+    padding: 40px 32px; width: 360px; max-width: 100%;
   }
-  .login-icon { font-size: 48px; margin-bottom: 16px; line-height: 1; }
-  .login-card h2 { font-size: 24px; font-weight: 700; margin-bottom: 4px; color: var(--text); }
-  .login-desc { color: var(--text-muted); font-size: 14px; margin-bottom: 28px; }
+  .login-card h2 { font-size: 22px; font-weight: 600; margin-bottom: 4px; }
+  .login-desc { color: var(--text-secondary); font-size: 14px; margin-bottom: 24px; }
   .login-error {
     color: var(--danger); font-size: 13px; margin-bottom: 12px;
-    display: none; background: rgba(231,76,92,0.1); padding: 8px 12px;
+    display: none; background: var(--danger-bg); padding: 8px 12px;
     border-radius: var(--radius-sm);
   }
   .login-error.show { display: block; }
-  .tg-login-container { display: flex; justify-content: center; margin-bottom: 16px; }
+  .tg-login-container { display: flex; justify-content: center; margin-bottom: 12px; }
   .tg-login-container iframe { max-width: 100%; }
-  .tg-login-container + .btn-passkey { margin-top: 12px; }
-
-  .btn {
-    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-    padding: 10px 20px; border: none; border-radius: var(--radius-sm);
-    font-size: 14px; font-weight: 500; cursor: pointer;
-    transition: all var(--transition); text-decoration: none;
-    white-space: nowrap; user-select: none;
+  .login-divider {
+    display: flex; align-items: center; gap: 12px; margin: 16px 0;
+    color: var(--text-muted); font-size: 12px;
   }
-  .btn:active { transform: scale(0.97); }
-  .btn-primary { background: var(--accent); color: #fff; }
-  .btn-primary:hover { background: var(--accent-hover); box-shadow: 0 0 20px var(--accent-glow); }
-  .btn-danger { background: var(--danger); color: #fff; }
-  .btn-danger:hover { background: var(--danger-hover); }
-  .btn-ghost { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
-  .btn-ghost:hover { background: var(--bg-hover); color: var(--text); }
-  .btn-sm { padding: 6px 12px; font-size: 12px; }
-  .btn-xs { padding: 4px 10px; font-size: 11px; border-radius: 4px; }
-  .btn-block { width: 100%; }
-  .btn-passkey { background: #1a6d4a; color: #fff; margin-top: 8px; }
-  .btn-passkey:hover { background: #21885d; }
-
-  .btn-icon {
-    width: 28px; height: 28px; padding: 0; display: inline-flex;
-    align-items: center; justify-content: center;
-    border: none; border-radius: 4px; cursor: pointer;
-    font-size: 16px; line-height: 1; transition: all var(--transition);
-    background: transparent; color: var(--text-muted);
+  .login-divider::before, .login-divider::after {
+    content: ''; flex: 1; border-top: 1px solid var(--border);
   }
-  .btn-icon:hover { background: var(--bg-hover); color: var(--text); }
+  .btn-passkey { background: var(--card-bg); color: var(--text); border: 1px solid var(--border); }
+  .btn-passkey:hover { background: var(--primary-bg); border-color: var(--primary); color: var(--primary); }
 
-  /* ── Card Selection ── */
-  .card-check { position: absolute; top: 8px; left: 8px; z-index: 3; }
-  .card-check input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; accent-color: var(--accent); }
-  .card.card-selected { box-shadow: 0 0 0 2px var(--accent), var(--shadow); }
-  .card-selected .card-thumb::after { content: ''; position: absolute; inset: 0; background: rgba(108,92,231,0.1); pointer-events: none; z-index: 1; }
-
-  /* ── Header ── */
+  /* Header */
   .header {
-    background: var(--header-gradient);
-    border-bottom: 1px solid var(--border);
+    background: var(--card-bg); border-bottom: 1px solid var(--border);
     position: sticky; top: 0; z-index: 40;
-    backdrop-filter: blur(12px);
   }
   .header-inner {
-    max-width: 1280px; margin: 0 auto;
+    max-width: 1200px; margin: 0 auto;
     display: flex; align-items: center; justify-content: space-between;
-    padding: 14px 24px; gap: 12px;
+    padding: 0 20px; height: 52px;
   }
-  .header-left { display: flex; align-items: center; gap: 12px; }
-  .header-left h1 { font-size: 18px; font-weight: 700; letter-spacing: -0.3px; }
-  .header-badge {
-    font-size: 11px; background: var(--accent); color: #fff;
-    padding: 2px 8px; border-radius: 10px; font-weight: 500;
-  }
+  .header-left { display: flex; align-items: center; gap: 8px; }
+  .header-left h1 { font-size: 16px; font-weight: 600; }
   .header-actions { display: flex; align-items: center; gap: 8px; }
 
-  /* ── Stats Bar ── */
-  .stats-bar {
-    max-width: 1280px; margin: 16px auto 0; padding: 0 24px;
-    display: flex; gap: 16px;
+  /* Stats */
+  .stats {
+    max-width: 1200px; margin: 16px auto 0; padding: 0 20px;
+    display: flex; gap: 12px;
   }
   .stat {
-    background: var(--bg-card); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 14px 20px;
-    display: flex; align-items: center; gap: 12px; flex: 1;
+    background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px 18px;
+    flex: 1;
   }
-  .stat-icon {
-    width: 36px; height: 36px; border-radius: 8px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 18px;
-  }
-  .stat-icon.blue { background: rgba(108,92,231,0.15); }
-  .stat-icon.green { background: rgba(46,204,113,0.15); }
-  .stat-info { display: flex; flex-direction: column; }
-  .stat-value { font-size: 20px; font-weight: 700; line-height: 1.2; }
-  .stat-label { font-size: 12px; color: var(--text-muted); }
+  .stat-value { font-size: 22px; font-weight: 600; line-height: 1.3; }
+  .stat-label { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
 
-  /* ── Toolbar ── */
+  /* Toolbar */
   .toolbar {
-    max-width: 1280px; margin: 12px auto 0; padding: 0 24px;
-    display: flex; align-items: center; gap: 12px;
+    max-width: 1200px; margin: 12px auto 0; padding: 0 20px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   }
-  .search-box {
-    position: relative; flex: 1; max-width: 360px;
+  .toolbar input[type="text"] {
+    flex: 1; min-width: 180px; max-width: 320px;
+    padding: 8px 12px; border: 1px solid var(--border);
+    border-radius: var(--radius-sm); background: var(--card-bg);
+    color: var(--text); font-size: 13px; outline: none;
   }
-  .search-box input {
-    width: 100%; padding: 9px 14px 9px 36px;
-    background: var(--bg-card); border: 1px solid var(--border);
-    border-radius: var(--radius-sm); color: var(--text);
-    font-size: 14px; outline: none; transition: border var(--transition);
+  .toolbar input[type="text"]:focus { border-color: var(--primary); }
+  .toolbar input::placeholder { color: var(--text-muted); }
+  .toolbar select {
+    padding: 7px 10px; border: 1px solid var(--border);
+    border-radius: var(--radius-sm); background: var(--card-bg);
+    color: var(--text); font-size: 13px; outline: none; cursor: pointer;
   }
-  .search-box input:focus { border-color: var(--accent); }
-  .search-box input::placeholder { color: var(--text-dim); }
-  .search-icon {
-    position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
-    color: var(--text-muted); font-size: 14px; pointer-events: none;
-  }
-  .sort-group { display: flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
-  .sort-btn {
-    padding: 8px 14px; border: none; background: transparent;
-    color: var(--text-muted); font-size: 13px; cursor: pointer;
-    transition: all var(--transition);
-  }
-  .sort-btn:hover { color: var(--text); background: var(--bg-hover); }
-  .sort-btn.active { background: var(--accent); color: #fff; }
-  .btn-refresh {
-    padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
-    background: transparent; color: var(--text-muted); cursor: pointer;
-    font-size: 16px; transition: all var(--transition); line-height: 1;
-  }
-  .btn-refresh:hover { background: var(--bg-hover); color: var(--text); }
-  .btn-refresh.spin { animation: spin 0.6s; }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  .toolbar select:focus { border-color: var(--primary); }
 
-  /* ── Gallery Grid ── */
-  .container { max-width: 1280px; margin: 0 auto; padding: 16px 24px 40px; }
+  /* Gallery */
+  .container { max-width: 1200px; margin: 0 auto; padding: 12px 20px 40px; }
   .gallery {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 12px;
   }
 
-  /* ── Card ── */
+  /* Card */
   .card {
-    background: var(--bg-card); border: 1px solid var(--border);
+    background: var(--card-bg); border: 1px solid var(--border);
     border-radius: var(--radius); overflow: hidden;
-    transition: transform var(--transition), box-shadow var(--transition);
+    transition: box-shadow 0.15s;
   }
-  .card:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+  .card:hover { box-shadow: var(--shadow); }
+  .card.card-selected { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
   .card-thumb {
     position: relative; width: 100%; aspect-ratio: 16/10;
-    background: var(--bg-elevated); cursor: pointer; overflow: hidden;
+    background: var(--bg); cursor: pointer; overflow: hidden;
   }
-  .card-thumb img {
-    width: 100%; height: 100%; object-fit: cover;
-    transition: transform 0.3s ease;
+  .card-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .card-check {
+    position: absolute; top: 6px; left: 6px; z-index: 2;
   }
-  .card:hover .card-thumb img { transform: scale(1.05); }
-  .card-thumb .overlay {
-    position: absolute; inset: 0;
-    background: rgba(0,0,0,0.4); opacity: 0;
-    display: flex; align-items: center; justify-content: center;
-    transition: opacity var(--transition);
+  .card-check input[type="checkbox"] {
+    width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary);
   }
-  .card:hover .card-thumb .overlay { opacity: 1; }
-  .card-thumb .overlay span {
-    color: #fff; font-size: 13px; font-weight: 500;
-    background: rgba(0,0,0,0.5); padding: 6px 14px; border-radius: 20px;
-  }
-
-  .card-body { padding: 12px 14px 14px; }
+  .card-body { padding: 10px 12px 12px; }
   .card-name {
     font-size: 13px; font-weight: 500;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    margin-bottom: 4px;
+    margin-bottom: 2px;
   }
   .card-meta {
-    font-size: 11px; color: var(--text-muted);
-    display: flex; align-items: center; gap: 4px; margin-bottom: 10px;
+    font-size: 11px; color: var(--text-secondary);
+    margin-bottom: 8px;
   }
-  .card-meta .dot { color: var(--text-dim); margin: 0 2px; }
-
-  .card-actions {
-    display: flex; flex-wrap: wrap; gap: 4px;
+  .card-meta span { color: var(--text-muted); margin: 0 2px; }
+  .card-actions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .fmt-btn {
+    padding: 3px 8px; border: 1px solid var(--border);
+    border-radius: 3px; background: transparent; color: var(--text-secondary);
+    font-size: 10px; font-weight: 500; cursor: pointer; letter-spacing: 0.3px;
+    transition: all 0.15s; text-transform: uppercase;
   }
-  .card-actions .fmt-btn {
-    padding: 4px 8px; border: 1px solid var(--border);
-    border-radius: 4px; background: transparent; color: var(--text-muted);
-    font-size: 10px; font-weight: 500; cursor: pointer;
-    transition: all var(--transition); letter-spacing: 0.3px;
-    text-transform: uppercase;
-  }
-  .card-actions .fmt-btn:hover {
-    background: var(--accent); border-color: var(--accent); color: #fff;
-  }
-  .card-actions .fmt-btn.copied {
-    background: var(--success); border-color: var(--success); color: #fff;
-  }
-  .card-actions .del-btn {
+  .fmt-btn:hover { background: var(--primary-bg); border-color: var(--primary); color: var(--primary); }
+  .fmt-btn.copied { background: var(--success); border-color: var(--success); color: #fff; }
+  .del-btn {
     margin-left: auto;
-    padding: 4px 8px; border: none; border-radius: 4px;
-    background: transparent; color: var(--text-dim);
-    font-size: 11px; cursor: pointer; transition: all var(--transition);
+    padding: 3px 8px; border: none; border-radius: 3px;
+    background: transparent; color: var(--text-muted);
+    font-size: 11px; cursor: pointer; transition: all 0.15s;
   }
-  .card-actions .del-btn:hover { background: rgba(231,76,92,0.15); color: var(--danger); }
+  .del-btn:hover { background: var(--danger-bg); color: var(--danger); }
 
-  /* ── Loading States ── */
-  .skeleton-grid {
+  /* Skeleton */
+  .skeleton {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 12px;
   }
   .skeleton-card {
-    background: var(--bg-card); border: 1px solid var(--border);
+    background: var(--card-bg); border: 1px solid var(--border);
     border-radius: var(--radius); overflow: hidden;
   }
   .skeleton-thumb {
     width: 100%; aspect-ratio: 16/10;
-    background: linear-gradient(90deg, var(--bg-elevated) 25%, var(--bg-hover) 50%, var(--bg-elevated) 75%);
+    background: linear-gradient(90deg, var(--border) 25%, transparent 50%, var(--border) 75%);
     background-size: 200% 100%; animation: shimmer 1.5s infinite;
   }
   .skeleton-line {
-    height: 12px; margin: 12px 14px 0;
-    background: linear-gradient(90deg, var(--bg-elevated) 25%, var(--bg-hover) 50%, var(--bg-elevated) 75%);
+    height: 10px; margin: 10px 12px 0; border-radius: 4px;
+    background: linear-gradient(90deg, var(--border) 25%, transparent 50%, var(--border) 75%);
     background-size: 200% 100%; animation: shimmer 1.5s infinite;
-    border-radius: 4px;
   }
-  .skeleton-line.short { width: 60%; }
-  .skeleton-line:last-child { margin-bottom: 14px; }
+  .skeleton-line:last-child { width: 60%; margin-bottom: 12px; }
   @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
   .empty-state {
     grid-column: 1 / -1; text-align: center; padding: 60px 20px;
-    color: var(--text-muted);
+    color: var(--text-secondary);
   }
-  .empty-state .empty-icon { font-size: 48px; margin-bottom: 12px; }
-  .empty-state p { font-size: 15px; }
+  .empty-state p { font-size: 14px; }
 
-  .load-more-wrap { text-align: center; padding: 20px 0 40px; }
-  .load-more-wrap .msg { color: var(--text-muted); font-size: 13px; padding: 12px 0; }
+  .load-more-wrap { text-align: center; padding: 20px 0; }
+  .load-msg { color: var(--text-muted); font-size: 13px; padding: 8px 0; }
 
-  /* ── Preview Overlay ── */
+  /* Preview Overlay */
   .preview-overlay {
     display: none; position: fixed; inset: 0; z-index: 100;
-    background: rgba(0,0,0,0.92);
-    align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.9); align-items: center; justify-content: center;
   }
   .preview-overlay.show { display: flex; }
   .preview-overlay img {
-    max-width: 92vw; max-height: 88vh; border-radius: 6px;
-    object-fit: contain; box-shadow: 0 8px 40px rgba(0,0,0,0.5);
-    user-select: none;
+    max-width: 92vw; max-height: 88vh; border-radius: 4px;
+    object-fit: contain; user-select: none;
   }
   .preview-close {
-    position: fixed; top: 20px; right: 20px;
-    width: 40px; height: 40px; border: none; border-radius: 50%;
+    position: fixed; top: 16px; right: 16px;
+    width: 36px; height: 36px; border: none; border-radius: 50%;
     background: rgba(255,255,255,0.1); color: #fff;
-    font-size: 20px; cursor: pointer; z-index: 101;
+    font-size: 18px; cursor: pointer; z-index: 101;
     display: flex; align-items: center; justify-content: center;
-    transition: background var(--transition);
+    transition: background 0.15s;
   }
-  .preview-close:hover { background: rgba(255,255,255,0.2); }
+  .preview-close:hover { background: rgba(255,255,255,0.25); }
   .preview-nav {
     position: fixed; top: 50%; transform: translateY(-50%);
-    width: 44px; height: 44px; border: none; border-radius: 50%;
+    width: 40px; height: 40px; border: none; border-radius: 50%;
     background: rgba(255,255,255,0.08); color: #fff;
-    font-size: 28px; cursor: pointer; z-index: 101;
+    font-size: 24px; cursor: pointer; z-index: 101;
     display: flex; align-items: center; justify-content: center;
-    transition: background var(--transition);
+    transition: background 0.15s;
   }
-  .preview-nav:hover { background: rgba(255,255,255,0.18); }
-  .preview-nav.prev { left: 20px; }
-  .preview-nav.next { right: 20px; }
+  .preview-nav:hover { background: rgba(255,255,255,0.2); }
+  .preview-nav.prev { left: 16px; }
+  .preview-nav.next { right: 16px; }
   .preview-nav.hidden { opacity: 0; pointer-events: none; }
   .preview-counter {
-    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-    color: rgba(255,255,255,0.5); font-size: 13px; z-index: 101;
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    color: rgba(255,255,255,0.4); font-size: 13px; z-index: 101;
   }
 
-  /* ── Toast ── */
+  /* Toast */
   .toast-container {
-    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-    z-index: 200; display: flex; flex-direction: column; gap: 8px;
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    z-index: 200; display: flex; flex-direction: column; gap: 6px;
     align-items: center; pointer-events: none;
   }
   .toast {
-    background: var(--bg-elevated); border: 1px solid var(--border);
-    color: var(--text); padding: 10px 20px; border-radius: var(--radius-sm);
+    background: var(--card-bg); border: 1px solid var(--border);
+    color: var(--text); padding: 8px 16px; border-radius: var(--radius-sm);
     font-size: 13px; box-shadow: var(--shadow);
-    opacity: 0; transform: translateY(10px);
-    transition: all 0.25s ease; pointer-events: auto;
+    opacity: 0; transform: translateY(8px);
+    transition: all 0.2s; pointer-events: auto;
   }
   .toast.show { opacity: 1; transform: translateY(0); }
   .toast.success { border-color: var(--success); }
-  .toast.error { border-color: var(--danger); color: var(--danger); }
+  .toast.error { border-color: var(--danger); }
 
-  /* ── Responsive ── */
-  @media (max-width: 768px) {
-    .header-inner { padding: 12px 16px; }
-    .stats-bar { padding: 0 16px; flex-direction: column; gap: 8px; }
-    .toolbar { padding: 0 16px; flex-wrap: wrap; }
-    .search-box { max-width: 100%; }
-    .container { padding: 12px 16px 32px; }
-    .gallery { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
-    .skeleton-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
-    .card-body { padding: 10px 12px 12px; }
-    .card-actions .fmt-btn { font-size: 9px; padding: 3px 6px; }
-    .preview-nav { width: 36px; height: 36px; font-size: 22px; }
-    .preview-nav.prev { left: 8px; }
-    .preview-nav.next { right: 8px; }
-    .login-card { padding: 28px 20px; }
-  }
-  @media (max-width: 480px) {
+  @media (max-width: 640px) {
+    .header-inner { padding: 0 14px; }
+    .stats { padding: 0 14px; flex-direction: column; gap: 8px; }
+    .toolbar { padding: 0 14px; }
+    .toolbar input[type="text"] { max-width: 100%; }
+    .container { padding: 10px 14px 32px; }
     .gallery { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
-    .skeleton-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+    .skeleton { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+    .card-body { padding: 8px 10px; }
+    .login-card { padding: 28px 20px; }
   }
 </style>
 </head>
 <body>
 
-<!-- ═══ Login Screen ═══ -->
+<!-- Login Screen -->
 <div id="login-screen">
   <div class="login-card">
-    <div class="login-icon">🖼</div>
     <h2>图床管理</h2>
-    <p class="login-desc">验证身份后管理你的图片</p>
+    <p class="login-desc">登录以管理图片</p>
     <div class="login-error" id="login-error"></div>
 
     ${hasTelegramLogin ? `
@@ -979,18 +906,15 @@ function serveAdminPage(env) {
         data-onauth="onTelegramAuth(user)"
         data-request-access="read">
       <\/script>
-    </div>` : ''}
+    </div>
+    <div class="login-divider">或</div>` : ''}
 
-    <button class="btn btn-passkey btn-block" id="passkey-login-btn" style="display:none" onclick="loginPassKey()">
-      🔑 使用 PassKey 登录
-    </button>
-    <button class="btn btn-passkey btn-block" id="register-first-passkey-btn" style="display:none" onclick="registerFirstPassKey()">
-      🔑 注册 PassKey
-    </button>
+    <button class="btn btn-passkey btn-block" id="passkey-login-btn" style="display:none" onclick="loginPassKey()">使用 PassKey 登录</button>
+    <button class="btn btn-passkey btn-block" id="register-first-passkey-btn" style="display:none" onclick="registerFirstPassKey()">注册 PassKey</button>
   </div>
 </div>
 
-<!-- ═══ Main App ═══ -->
+<!-- Main App -->
 <div id="app" style="display:none">
 
   <!-- Header -->
@@ -998,81 +922,67 @@ function serveAdminPage(env) {
     <div class="header-inner">
       <div class="header-left">
         <h1>图床管理</h1>
-        <span class="header-badge">v1</span>
       </div>
       <div class="header-actions">
-        <button class="btn btn-ghost btn-sm" id="register-passkey-btn" style="display:none" onclick="registerPassKey()">
-          🔑 注册 PassKey
-        </button>
-        <button class="btn btn-ghost btn-sm" onclick="logout()">退出</button>
+        <button class="btn btn-ghost btn-sm" id="register-passkey-btn" style="display:none" onclick="registerPassKey()">添加 PassKey</button>
+        <button class="btn btn-ghost btn-sm" onclick="logout()">退出登录</button>
       </div>
     </div>
   </div>
 
   <!-- Stats -->
-  <div class="stats-bar">
+  <div class="stats">
     <div class="stat">
-      <div class="stat-icon blue">🖼</div>
-      <div class="stat-info">
-        <span class="stat-value" id="stat-count">-</span>
-        <span class="stat-label">图片总数</span>
-      </div>
+      <span class="stat-value" id="stat-count">-</span>
+      <span class="stat-label">图片总数</span>
     </div>
     <div class="stat">
-      <div class="stat-icon green">💾</div>
-      <div class="stat-info">
-        <span class="stat-value" id="stat-size">-</span>
-        <span class="stat-label">总大小</span>
-      </div>
+      <span class="stat-value" id="stat-size">-</span>
+      <span class="stat-label">总大小</span>
     </div>
   </div>
 
   <!-- Toolbar -->
   <div class="toolbar">
-    <div class="search-box">
-      <span class="search-icon">🔍</span>
-      <input type="text" id="search-input" placeholder="搜索文件名..." oninput="onSearchInput()">
-    </div>
-    <div class="sort-group">
-      <button class="sort-btn active" id="sort-newest" onclick="setSort('newest')">最新</button>
-      <button class="sort-btn" id="sort-oldest" onclick="setSort('oldest')">最早</button>
-    </div>
-    <button class="btn btn-danger btn-sm" id="batch-delete-btn" style="display:none" onclick="batchDelete()">🗑 删除选中 (<span id="selected-count">0</span>)</button>
-    <button class="btn-refresh" onclick="refreshImages()" id="refresh-btn">↻</button>
+    <input type="text" id="search-input" placeholder="搜索文件名..." oninput="onSearchInput()">
+    <select id="sort-select" onchange="setSort(this.value)">
+      <option value="newest">最新优先</option>
+      <option value="oldest">最早优先</option>
+    </select>
+    <button class="btn btn-danger btn-sm" id="batch-delete-btn" style="display:none" onclick="batchDelete()">删除选中 (<span id="selected-count">0</span>)</button>
+    <button class="btn btn-ghost btn-sm" onclick="refreshImages()">刷新</button>
   </div>
 
   <!-- Gallery -->
   <div class="container">
     <div class="gallery" id="gallery"></div>
 
-    <!-- Skeleton -->
-    <div class="skeleton-grid" id="skeleton">
-      <div class="skeleton-card"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-      <div class="skeleton-card"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-      <div class="skeleton-card"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-      <div class="skeleton-card"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-      <div class="skeleton-card"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-      <div class="skeleton-card"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+    <div class="skeleton" id="skeleton">
+      <div class="skeleton-card"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+      <div class="skeleton-card"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+      <div class="skeleton-card"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+      <div class="skeleton-card"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+      <div class="skeleton-card"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+      <div class="skeleton-card"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
     </div>
 
-    <!-- Load more -->
     <div class="load-more-wrap">
-      <div class="msg" id="load-msg"></div>
+      <p class="load-msg" id="load-msg"></p>
       <button class="btn btn-primary" id="load-more-btn" style="display:none" onclick="loadMore()">加载更多</button>
     </div>
   </div>
 </div>
 
-<!-- ═══ Preview Overlay ═══ -->
+<!-- Preview Overlay -->
 <div class="preview-overlay" id="preview">
-  <button class="preview-close" onclick="closePreview()">✕</button>
-  <button class="preview-nav prev" id="prev-btn" onclick="prevImage()">‹</button>
+  <button class="preview-close" onclick="closePreview()">&#x2715;</button>
+  <button class="preview-nav prev" id="prev-btn" onclick="prevImage()">&#8249;</button>
   <img id="preview-img" src="" alt="preview">
-  <button class="preview-nav next" id="next-btn" onclick="nextImage()">›</button>
+  <button class="preview-nav next" id="next-btn" onclick="nextImage()">&#8250;</button>
   <div class="preview-counter" id="preview-counter"></div>
 </div>
 
-<!-- ═══ Toast ═══ -->
+<!-- Toast -->
 <div class="toast-container" id="toast"></div>
 
 <script>
@@ -1085,12 +995,22 @@ let currentSort = 'newest';
 let searchQuery = '';
 let selectedNanoids = new Set();
 
-// ── WebAuthn check ──
+// Auto-check session on page load
+(async function checkSession() {
+  try {
+    const resp = await fetch('/admin/api/check-session');
+    const data = await resp.json();
+    if (data.authenticated) {
+      onLoginSuccess();
+    }
+  } catch {}
+})();
+
+// WebAuthn check
 if (window.PublicKeyCredential) {
   PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then(avail => {
     webauthnAvailable = avail;
     if (avail) {
-      // Check setup status to show the right button
       fetch('/admin/api/webauthn/setup-status').then(r => r.json()).then(status => {
         if (status.canRegister) {
           document.getElementById('register-first-passkey-btn').style.display = 'block';
@@ -1104,7 +1024,7 @@ if (window.PublicKeyCredential) {
   });
 }
 
-// ── Telegram Login ──
+// Telegram Login
 ${hasTelegramLogin ? `
 async function onTelegramAuth(user) {
   const err = document.getElementById('login-error');
@@ -1123,7 +1043,7 @@ async function onTelegramAuth(user) {
   } catch { err.textContent = '网络错误，请重试'; err.classList.add('show'); }
 }` : ''}
 
-// ── PassKey Login ──
+// PassKey Login
 async function loginPassKey() {
   const err = document.getElementById('login-error');
   err.classList.remove('show');
@@ -1152,16 +1072,16 @@ async function loginPassKey() {
   }
 }
 
-// ── PassKey Registration ──
+// PassKey Registration
 async function registerPassKey() {
   const btn = document.getElementById('register-passkey-btn');
-  btn.disabled = true; btn.textContent = '⏳ 注册中...';
+  btn.disabled = true; btn.textContent = '注册中...';
   try {
     const beginResp = await fetch('/admin/api/webauthn/register/begin', { method: 'POST' });
     if (!beginResp.ok) {
       const d = await beginResp.json();
       showToast('注册失败: ' + (d.error || '无法开始注册'), 'error');
-      btn.disabled = false; btn.textContent = '🔑 注册 PassKey'; return;
+      btn.disabled = false; btn.textContent = '添加 PassKey'; return;
     }
     const options = await beginResp.json();
     options.challenge = base64ToArray(options.challenge);
@@ -1171,26 +1091,26 @@ async function registerPassKey() {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(formatWebAuthnResponse(cred)),
     });
-    if (resp.ok) { showToast('PassKey 注册成功 ✅', 'success'); btn.textContent = '✅ 已注册'; }
-    else { const d = await resp.json(); showToast('注册失败: ' + (d.error || '未知错误'), 'error'); btn.textContent = '🔑 注册 PassKey'; }
+    if (resp.ok) { showToast('PassKey 注册成功', 'success'); btn.textContent = '已注册'; }
+    else { const d = await resp.json(); showToast('注册失败: ' + (d.error || '未知错误'), 'error'); btn.textContent = '添加 PassKey'; }
     btn.disabled = false;
-    setTimeout(() => { btn.textContent = '🔑 注册 PassKey'; btn.disabled = false; }, 2500);
+    setTimeout(() => { btn.textContent = '添加 PassKey'; btn.disabled = false; }, 2500);
   } catch (e) {
-    if (e.name === 'AbortError' || e.name === 'NotAllowedError') { btn.textContent = '🔑 注册 PassKey'; btn.disabled = false; return; }
-    showToast('注册失败', 'error'); btn.textContent = '🔑 注册 PassKey'; btn.disabled = false;
+    if (e.name === 'AbortError' || e.name === 'NotAllowedError') { btn.textContent = '添加 PassKey'; btn.disabled = false; return; }
+    showToast('注册失败', 'error'); btn.textContent = '添加 PassKey'; btn.disabled = false;
   }
 }
 
-// ── First-time PassKey registration from login screen ──
+// First-time PassKey registration from login screen
 async function registerFirstPassKey() {
   const btn = document.getElementById('register-first-passkey-btn');
-  btn.disabled = true; btn.textContent = '⏳ 注册中...';
+  btn.disabled = true; btn.textContent = '注册中...';
   try {
     const beginResp = await fetch('/admin/api/webauthn/register/begin', { method: 'POST' });
     if (!beginResp.ok) {
       const d = await beginResp.json();
       showToast('注册失败: ' + (d.error || '无法开始注册'), 'error');
-      btn.disabled = false; btn.textContent = '🔑 注册 PassKey'; return;
+      btn.disabled = false; btn.textContent = '注册 PassKey'; return;
     }
     const options = await beginResp.json();
     options.challenge = base64ToArray(options.challenge);
@@ -1201,14 +1121,14 @@ async function registerFirstPassKey() {
       body: JSON.stringify(formatWebAuthnResponse(cred)),
     });
     if (resp.ok) { onLoginSuccess(); }
-    else { const d = await resp.json(); showToast('注册失败: ' + (d.error || '未知错误'), 'error'); btn.disabled = false; btn.textContent = '🔑 注册 PassKey'; }
+    else { const d = await resp.json(); showToast('注册失败: ' + (d.error || '未知错误'), 'error'); btn.disabled = false; btn.textContent = '注册 PassKey'; }
   } catch (e) {
-    if (e.name === 'AbortError' || e.name === 'NotAllowedError') { btn.textContent = '🔑 注册 PassKey'; btn.disabled = false; return; }
-    showToast('注册失败', 'error'); btn.textContent = '🔑 注册 PassKey'; btn.disabled = false;
+    if (e.name === 'AbortError' || e.name === 'NotAllowedError') { btn.textContent = '注册 PassKey'; btn.disabled = false; return; }
+    showToast('注册失败', 'error'); btn.textContent = '注册 PassKey'; btn.disabled = false;
   }
 }
 
-// ── Login Success ──
+// Login Success
 function onLoginSuccess() {
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app').style.display = 'block';
@@ -1216,7 +1136,7 @@ function onLoginSuccess() {
   loadImages();
 }
 
-// ── WebAuthn Helpers ──
+// WebAuthn Helpers
 function formatWebAuthnResponse(cred) {
   const response = {};
   if (cred.response.clientDataJSON) response.clientDataJSON = arrayToBase64(cred.response.clientDataJSON);
@@ -1239,7 +1159,7 @@ function arrayToBase64(arr) {
     .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
 }
 
-// ── Card Selection ──
+// Card Selection
 function onImageCheck(checkbox) {
   const nanoid = checkbox.dataset.nanoid;
   const card = checkbox.closest('.card');
@@ -1264,11 +1184,8 @@ async function batchDelete() {
   const count = selectedNanoids.size;
   if (count === 0) return;
   if (!confirm(\`确定删除选中的 \${count} 张图片？此操作不可撤销。\`)) return;
-
   const btn = document.getElementById('batch-delete-btn');
-  btn.disabled = true;
-  btn.textContent = '⏳ 删除中...';
-
+  btn.disabled = true; btn.textContent = '删除中...';
   try {
     const resp = await fetch('/admin/api/batch-delete', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1281,17 +1198,15 @@ async function batchDelete() {
     } else {
       const d = await resp.json();
       showToast('批量删除失败: ' + (d.error || ''), 'error');
-      btn.disabled = false;
-      btn.innerHTML = '🗑 删除选中 (<span id="selected-count">' + count + '</span>)';
+      btn.disabled = false; btn.innerHTML = '删除选中 (<span id="selected-count">' + count + '</span>)';
     }
   } catch {
     showToast('批量删除失败', 'error');
-    btn.disabled = false;
-    btn.innerHTML = '🗑 删除选中 (<span id="selected-count">' + count + '</span>)';
+    btn.disabled = false; btn.innerHTML = '删除选中 (<span id="selected-count">' + count + '</span>)';
   }
 }
 
-// ── Image Gallery ──
+// Image Gallery
 async function loadImages() {
   const skel = document.getElementById('skeleton');
   skel.style.display = 'grid';
@@ -1313,28 +1228,26 @@ async function loadImages() {
 function renderImages(images) {
   const gallery = document.getElementById('gallery');
   if (images.length === 0 && !gallery.children.length) {
-    gallery.innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div><p>暂无图片</p></div>';
+    gallery.innerHTML = '<div class="empty-state"><p>暂无图片</p></div>';
     return;
   }
   for (const img of images) {
     allImages.push(img);
+    const idx = allImages.length - 1;
     const card = document.createElement('div');
     card.className = 'card';
-    card.dataset.nanoid = img.nanoid;
-    const idx = allImages.length - 1;
     card.innerHTML = \`
       <div class="card-thumb" onclick="openPreview(\${idx})">
         <img src="\${img.publicUrl}" alt="" loading="lazy">
-        <div class="overlay"><span>🔍 预览</span></div>
         <div class="card-check"><input type="checkbox" class="img-check" data-nanoid="\${img.nanoid}" onclick="event.stopPropagation()" onchange="onImageCheck(this)"></div>
       </div>
       <div class="card-body">
         <div class="card-name" title="\${escHtml(img.fileName || img.r2Key)}">\${escHtml(img.fileName || img.r2Key)}</div>
         <div class="card-meta">
           \${formatSize(img.fileSize)}
-          <span class="dot">·</span>
+          <span>·</span>
           \${formatTime(img.timestamp)}
-          <span class="dot">·</span>
+          <span>·</span>
           \${escHtml(img.uploader || '?')}
         </div>
         <div class="card-actions">
@@ -1342,7 +1255,7 @@ function renderImages(images) {
           <button class="fmt-btn" data-url="\${img.publicUrl}" data-name="\${escHtml(img.fileName || 'image')}" data-format="md">MD</button>
           <button class="fmt-btn" data-url="\${img.publicUrl}" data-name="\${escHtml(img.fileName || 'image')}" data-format="html">HTML</button>
           <button class="fmt-btn" data-url="\${img.publicUrl}" data-name="\${escHtml(img.fileName || 'image')}" data-format="bbcode">BBC</button>
-          <button class="del-btn" data-nanoid="\${img.nanoid}" title="删除">🗑</button>
+          <button class="del-btn" data-nanoid="\${img.nanoid}" title="删除">删除</button>
         </div>
       </div>
     \`;
@@ -1358,8 +1271,7 @@ function updateLoadMore() {
     msg.textContent = allImages.length > 0 ? '已加载全部图片' : '';
   } else {
     btn.style.display = 'inline-block';
-    btn.disabled = false;
-    btn.textContent = '加载更多';
+    btn.disabled = false; btn.textContent = '加载更多';
     msg.textContent = '';
   }
 }
@@ -1377,7 +1289,7 @@ function updateStats() {
   document.getElementById('stat-size').textContent = formatSize(totalSize);
 }
 
-// ── Search & Sort ──
+// Search & Sort
 function onSearchInput() {
   searchQuery = document.getElementById('search-input').value.toLowerCase().trim();
   applyFilter();
@@ -1385,8 +1297,6 @@ function onSearchInput() {
 
 function setSort(sort) {
   currentSort = sort;
-  document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById(sort === 'newest' ? 'sort-newest' : 'sort-oldest').classList.add('active');
   applyFilter();
 }
 
@@ -1400,30 +1310,27 @@ function applyFilter() {
   });
   gallery.innerHTML = '';
   if (filtered.length === 0) {
-    gallery.innerHTML = '<div class="empty-state"><div class="empty-icon">🔍</div><p>' + (searchQuery ? '没有匹配的图片' : '暂无图片') + '</p></div>';
+    gallery.innerHTML = '<div class="empty-state"><p>' + (searchQuery ? '没有匹配的图片' : '暂无图片') + '</p></div>';
     document.getElementById('load-more-btn').style.display = 'none';
     document.getElementById('load-msg').textContent = '';
     return;
   }
-  // Re-render filtered images using stored data (simple approach: rebuild cards from stored arr)
   const indices = filtered.map(img => allImages.indexOf(img));
   for (const idx of indices) {
     const img = allImages[idx];
     const card = document.createElement('div');
-    card.className = 'card';
     card.innerHTML = \`
       <div class="card-thumb" onclick="openPreview(\${idx})">
         <img src="\${img.publicUrl}" alt="" loading="lazy">
-        <div class="overlay"><span>🔍 预览</span></div>
         <div class="card-check"><input type="checkbox" class="img-check" data-nanoid="\${img.nanoid}" onclick="event.stopPropagation()" onchange="onImageCheck(this)"></div>
       </div>
       <div class="card-body">
         <div class="card-name" title="\${escHtml(img.fileName || img.r2Key)}">\${escHtml(img.fileName || img.r2Key)}</div>
         <div class="card-meta">
           \${formatSize(img.fileSize)}
-          <span class="dot">·</span>
+          <span>·</span>
           \${formatTime(img.timestamp)}
-          <span class="dot">·</span>
+          <span>·</span>
           \${escHtml(img.uploader || '?')}
         </div>
         <div class="card-actions">
@@ -1431,13 +1338,12 @@ function applyFilter() {
           <button class="fmt-btn" data-url="\${img.publicUrl}" data-name="\${escHtml(img.fileName || 'image')}" data-format="md">MD</button>
           <button class="fmt-btn" data-url="\${img.publicUrl}" data-name="\${escHtml(img.fileName || 'image')}" data-format="html">HTML</button>
           <button class="fmt-btn" data-url="\${img.publicUrl}" data-name="\${escHtml(img.fileName || 'image')}" data-format="bbcode">BBC</button>
-          <button class="del-btn" data-nanoid="\${img.nanoid}" title="删除">🗑</button>
+          <button class="del-btn" data-nanoid="\${img.nanoid}" title="删除">删除</button>
         </div>
       </div>
     \`;
     gallery.appendChild(card);
   }
-  // Restore selection state after re-render
   document.querySelectorAll('.img-check').forEach(cb => {
     if (selectedNanoids.has(cb.dataset.nanoid)) {
       cb.checked = true;
@@ -1448,16 +1354,13 @@ function applyFilter() {
 }
 
 async function refreshImages() {
-  const btn = document.getElementById('refresh-btn');
-  btn.classList.add('spin');
   cursor = null; complete = false; allImages = []; selectedNanoids.clear();
   document.getElementById('gallery').innerHTML = '';
   updateBatchDeleteBtn();
   await loadImages();
-  setTimeout(() => btn.classList.remove('spin'), 600);
 }
 
-// ── Copy Format ──
+// Copy Format
 function copyFormat(url, filename, format, btn) {
   let text = '';
   switch (format) {
@@ -1468,14 +1371,14 @@ function copyFormat(url, filename, format, btn) {
   }
   navigator.clipboard.writeText(text).then(() => {
     const orig = btn.textContent;
-    btn.textContent = '✓';
+    btn.textContent = 'OK';
     btn.classList.add('copied');
     setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 1200);
     showToast('已复制 ' + format.toUpperCase(), 'success');
   }).catch(() => showToast('复制失败', 'error'));
 }
 
-// ── Delete ──
+// Delete
 async function deleteImg(nanoid) {
   if (!confirm('确定删除这张图片？此操作不可撤销。')) return;
   try {
@@ -1488,7 +1391,7 @@ async function deleteImg(nanoid) {
   } catch { showToast('删除失败', 'error'); }
 }
 
-// ── Preview with keyboard nav ──
+// Preview
 function openPreview(idx) {
   if (!allImages[idx]) return;
   previewIndex = idx;
@@ -1504,33 +1407,25 @@ function closePreview() {
   document.getElementById('preview-img').src = '';
 }
 
-function prevImage() {
-  if (previewIndex > 0) openPreview(previewIndex - 1);
-}
-function nextImage() {
-  if (previewIndex < allImages.length - 1) openPreview(previewIndex + 1);
-}
+function prevImage() { if (previewIndex > 0) openPreview(previewIndex - 1); }
+function nextImage() { if (previewIndex < allImages.length - 1) openPreview(previewIndex + 1); }
 function updateNavButtons() {
   document.getElementById('prev-btn').classList.toggle('hidden', previewIndex <= 0);
   document.getElementById('next-btn').classList.toggle('hidden', previewIndex >= allImages.length - 1);
 }
 
-// Keyboard shortcuts
 document.addEventListener('keydown', function(e) {
-  const preview = document.getElementById('preview');
-  if (!preview.classList.contains('show')) return;
+  const el = document.getElementById('preview');
+  if (!el.classList.contains('show')) return;
   if (e.key === 'Escape') closePreview();
   if (e.key === 'ArrowLeft') prevImage();
   if (e.key === 'ArrowRight') nextImage();
 });
 
-// Click outside image to close preview
 document.getElementById('preview').addEventListener('click', function(e) {
   if (e.target === this) closePreview();
 });
 
-
-// Delegate clicks on format/delete buttons (eliminates inline onclick XSS)
 document.getElementById('gallery').addEventListener('click', function(e) {
   const target = e.target.closest('.fmt-btn, .del-btn');
   if (!target) return;
@@ -1541,14 +1436,15 @@ document.getElementById('gallery').addEventListener('click', function(e) {
   }
 });
 
-// ── Logout ──
-function logout() {
+// Logout (call API to invalidate server-side session)
+async function logout() {
+  await fetch('/admin/api/logout', { method: 'POST' }).catch(() => {});
   const secure = location.protocol === 'https:';
   document.cookie = 'admin_token=; Path=/admin; Max-Age=0' + (secure ? '; Secure' : '');
   location.reload();
 }
 
-// ── Format Helpers ──
+// Format Helpers
 function formatSize(bytes) {
   if (!bytes) return '?';
   const kb = bytes / 1024;
@@ -1570,7 +1466,7 @@ function escHtml(s) {
   return div.innerHTML;
 }
 
-// ── Toast ──
+// Toast
 function showToast(msg, type) {
   const container = document.getElementById('toast');
   const el = document.createElement('div');
@@ -1580,7 +1476,7 @@ function showToast(msg, type) {
   requestAnimationFrame(() => el.classList.add('show'));
   setTimeout(() => {
     el.classList.remove('show');
-    setTimeout(() => el.remove(), 250);
+    setTimeout(() => el.remove(), 200);
   }, 2000);
 }
 <\/script>
