@@ -1327,14 +1327,26 @@ let selectedNanoids = new Set();
   if (!params.get('hash') || !params.get('id')) return;
   const data = {};
   for (const [k, v] of params) data[k] = v;
-  fetch('/admin/api/tg-login', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(data),
-  }).then(r => {
-    if (r.ok) {
-      window.location.replace('/admin');
+  (async function() {
+    try {
+      const r = await fetch('/admin/api/tg-login', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data),
+      });
+      if (r.ok) {
+        window.location.replace('/admin');
+      } else {
+        const d = await r.json();
+        document.getElementById('login-error').textContent = 'TG 登录失败：' + (d.error || r.status);
+        document.getElementById('login-error').classList.add('show');
+        window.location.hash = '';
+      }
+    } catch (e) {
+      document.getElementById('login-error').textContent = '网络错误，请重试';
+      document.getElementById('login-error').classList.add('show');
+      window.location.hash = '';
     }
-  });
+  })();
 })();
 
 // Auto-check session on page load
