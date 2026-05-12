@@ -1353,9 +1353,8 @@ if (window.PublicKeyCredential) {
   });
 }
 
-// Telegram Login (try app deep link first, fallback to OAuth popup)
+// Telegram Login — 直接打开 OAuth 弹窗
 const tgBotId = '${botId}';
-const tgBotLogin = '${botUsername}';
 
 function telegramLogin() {
   const err = document.getElementById('login-error');
@@ -1363,30 +1362,12 @@ function telegramLogin() {
 
   const origin = window.location.origin;
   const oauthUrl = 'https://oauth.telegram.org/auth?bot_id=' + tgBotId + '&origin=' + encodeURIComponent(origin) + '&embed=1&return_to=';
-  const tgUrl = 'tg://resolve?domain=' + tgBotLogin + '&text=/login';
 
-  // Open OAuth popup first (to bypass popup blockers)
-  let popup = window.open('', 'tg_oauth', 'width=400,height=600,popup=1');
-
-  // Try to wake the Telegram app via a tiny hidden window
-  // (doesn't navigate the main page away, so the fallback setTimeout still works)
-  window.open(tgUrl, 'tg_wake', 'width=1,height=1,left=-10000,top=-10000');
-
-  let appOpened = false;
-  const onBlur = () => { appOpened = true; };
-  window.addEventListener('blur', onBlur, { once: true });
-
-  // Fallback: navigate popup to OAuth if app didn't open
-  setTimeout(() => {
-    window.removeEventListener('blur', onBlur);
-    if (!appOpened) {
-      if (!popup || popup.closed) {
-        popup = window.open(oauthUrl, 'tg_oauth', 'width=400,height=600,popup=1');
-      } else {
-        popup.location.href = oauthUrl;
-      }
-    }
-  }, 2000);
+  let popup = window.open(oauthUrl, 'tg_oauth', 'width=400,height=600,popup=1');
+  if (!popup || popup.closed) {
+    // Popup blocked — fallback to redirect
+    window.location.href = oauthUrl;
+  }
 }
 
 // Listen for auth callback from Telegram OAuth popup
