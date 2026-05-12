@@ -1,5 +1,5 @@
 // Web management dashboard for the image bed
-import { checkRateLimit, secureHeaders, cspHeaders, parseAllowedUsers } from './utils.js';
+import { checkRateLimit, secureHeaders, cspHeaders, parseAllowedUsers, generateId, getExtension, isValidImageMime } from './utils.js';
 import {
   beginRegistration, completeRegistration,
   beginAuthentication, completeAuthentication,
@@ -29,7 +29,14 @@ export function handleAdminRequest(request, env) {
 
   // Serve admin page
   if (path === '/admin' || path === '/admin/') {
-    if (request.method === 'GET') return serveAdminPage(env);
+    if (request.method === 'GET') {
+      // Handle one-time login token from bot deep-link auth
+      const loginToken = url.searchParams.get('login_token');
+      if (loginToken) {
+        return handleLoginToken(env, loginToken, request);
+      }
+      return serveAdminPage(env);
+    }
     return new Response('Method not allowed', { status: 405, headers: secureHeaders() });
   }
 
@@ -48,6 +55,10 @@ export function handleAdminRequest(request, env) {
     return handleDeleteImage(request, env);
   if (path === '/admin/api/batch-delete' && request.method === 'POST')
     return handleBatchDelete(request, env);
+  if (path === '/admin/api/upload' && request.method === 'POST')
+    return handleAdminUpload(request, env);
+  if (path === '/admin/api/export' && request.method === 'GET')
+    return handleExport(request, env);
 
   // WebAuthn endpoints
   if (path === '/admin/api/webauthn/register/begin' && request.method === 'POST')
@@ -64,6 +75,10 @@ export function handleAdminRequest(request, env) {
     return handleWebAuthnDeleteCredential(request, env);
   if (path === '/admin/api/webauthn/setup-status' && request.method === 'GET')
     return handleWebAuthnSetupStatus(request, env);
+
+  // Account management
+  if (path === '/admin/api/delete-account' && request.method === 'POST')
+    return handleDeleteAccount(request, env);
 
   return new Response('Not found', { status: 404, headers: secureHeaders() });
 }
@@ -377,11 +392,135 @@ async function handleBatchDelete(request, env) {
   });
 }
 
+// --- Admin page upload ---
+
+async function handleAdminUpload(request, env) {
+  const auth = await checkSession(request, env);
+  if (!auth) return unauthorized();
+
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  if (!(await checkRateLimit(env, `admin-upload:${ip}`, 20, 60))) {
+    return new Response(JSON.stringify({ error: 'Too many requests' }), {
+      status: 429, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
+
+  const ct = request.headers.get('Content-Type') || '';
+  if (!ct.includes('multipart/form-data')) {
+    return new Response(JSON.stringify({ error: 'Expected multipart/form-data' }), {
+      status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
+
+  let formData;
+  try { formData = await request.formData(); } catch {
+    return new Response(JSON.stringify({ error: 'Invalid form data' }), {
+      status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
+
+  const file = formData.get('image');
+  if (!file || typeof file === 'string') {
+    return new Response(JSON.stringify({ error: 'No image file provided' }), {
+      status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
+
+  if (!isValidImageMime(file.type)) {
+    return new Response(JSON.stringify({ error: 'Unsupported image format' }), {
+      status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
+
+  const MAX_SIZE = 50 * 1024 * 1024;
+  if (file.size > MAX_SIZE) {
+    return new Response(JSON.stringify({ error: 'File too large (max 50MB)' }), {
+      status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
+
+  const fileBuffer = await file.arrayBuffer();
+  const ext = getExtension(file.type);
+  const nanoid = await generateId();
+  const r2Key = `uploads/${nanoid}.${ext}`;
+
+  await env.IMG_BUCKET.put(r2Key, fileBuffer, {
+    httpMetadata: { contentType: file.type },
+    customMetadata: { uploader: auth },
+  });
+
+  const publicUrl = `${env.PUBLIC_URL.replace(/\/+$/, '')}/${r2Key}`;
+
+  const metadata = {
+    nanoid, r2Key,
+    fileName: file.name || 'image',
+    mimeType: file.type,
+    fileSize: fileBuffer.byteLength,
+    uploader: auth,
+    uploaderId: 0,
+    chatId: 0, messageId: 0,
+    timestamp: Date.now(),
+  };
+  await env.IMG_KV.put(`img:${nanoid}`, JSON.stringify(metadata));
+
+  return new Response(JSON.stringify({
+    ok: true, url: publicUrl,
+    md: `![](${publicUrl})`,
+    html: `<img src="${publicUrl}" alt="">`,
+    bbcode: `[img]${publicUrl}[/img]`,
+  }), {
+    headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+  });
+}
+
+// --- Batch export URLs ---
+
+async function handleExport(request, env) {
+  const auth = await checkSession(request, env);
+  if (!auth) return unauthorized();
+
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  if (!(await checkRateLimit(env, `admin-export:${ip}`, 10, 60))) {
+    return new Response(JSON.stringify({ error: 'Too many requests' }), {
+      status: 429, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
+
+  let cursor = undefined;
+  const urls = [];
+  const baseUrl = env.PUBLIC_URL.replace(/\/+$/, '');
+
+  do {
+    const list = await env.IMG_KV.list({ prefix: 'img:', cursor, limit: 1000 });
+    for (const key of list.keys) {
+      const val = await env.IMG_KV.get(key.name);
+      if (!val) continue;
+      try {
+        const m = JSON.parse(val);
+        urls.push(`${baseUrl}/${m.r2Key}`);
+      } catch {}
+    }
+    cursor = list.cursor;
+  } while (cursor);
+
+  return new Response(urls.join('\n'), {
+    headers: {
+      ...secureHeaders({ 'Content-Type': 'text/plain; charset=utf-8' }),
+      ...cspHeaders(),
+      'Content-Disposition': 'attachment; filename="images.txt"',
+    },
+  });
+}
+
 // --- WebAuthn Registration ---
 
 async function handleWebAuthnRegisterBegin(request, env) {
   const existing = await env.IMG_KV.list({ prefix: 'wa:cred:' });
   if (existing.keys.length > 0) {
+    const auth = await checkSession(request, env);
+    if (!auth) return unauthorized();
+  } else if (env.TELEGRAM_BOT_USERNAME) {
+    // If Telegram login is configured, require authentication even for first PassKey
     const auth = await checkSession(request, env);
     if (!auth) return unauthorized();
   }
@@ -407,6 +546,9 @@ async function handleWebAuthnRegisterBegin(request, env) {
 async function handleWebAuthnRegisterComplete(request, env) {
   const existing = await env.IMG_KV.list({ prefix: 'wa:cred:' });
   if (existing.keys.length > 0) {
+    const auth = await checkSession(request, env);
+    if (!auth) return unauthorized();
+  } else if (env.TELEGRAM_BOT_USERNAME) {
     const auth = await checkSession(request, env);
     if (!auth) return unauthorized();
   }
@@ -585,6 +727,65 @@ async function handleWebAuthnSetupStatus(request, env) {
   });
 }
 
+// --- Delete Account (removes all credentials and sessions) ---
+
+async function handleDeleteAccount(request, env) {
+  const auth = await checkSession(request, env);
+  if (!auth) return unauthorized();
+
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  if (!(await checkRateLimit(env, `admin-del-account:${ip}`, 3, 60))) {
+    return new Response(JSON.stringify({ error: 'Too many requests' }), {
+      status: 429, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+    });
+  }
+
+  // Delete all WebAuthn credentials
+  const credList = await env.IMG_KV.list({ prefix: 'wa:cred:' });
+  await Promise.all(credList.keys.map(k => env.IMG_KV.delete(k.name)));
+
+  // Delete all WebAuthn sessions
+  const sessionList = await env.IMG_KV.list({ prefix: 'wa:session:' });
+  await Promise.all(sessionList.keys.map(k => env.IMG_KV.delete(k.name)));
+
+  // Delete all Telegram sessions
+  const tgSessionList = await env.IMG_KV.list({ prefix: 'session:tg:' });
+  await Promise.all(tgSessionList.keys.map(k => env.IMG_KV.delete(k.name)));
+
+  const resp = new Response(JSON.stringify({ ok: true }), {
+    headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
+  });
+  resp.headers.set("Set-Cookie", "admin_token=; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=0");
+  return resp;
+}
+
+// --- Login token from bot deep-link auth ---
+
+async function handleLoginToken(env, loginToken, request) {
+  const username = await env.IMG_KV.get(`login_token:${loginToken}`);
+  if (!username) {
+    const url = new URL(request.url);
+    return Response.redirect(`${url.origin}/admin`, 302);
+  }
+
+  const admins = parseAllowedUsers(env.ADMIN_USERNAMES);
+  if (!admins || !admins.includes(username)) {
+    const url = new URL(request.url);
+    return Response.redirect(`${url.origin}/admin`, 302);
+  }
+
+  await env.IMG_KV.delete(`login_token:${loginToken}`);
+
+  const sessionId = 'tg:' + toBase64urlBody(crypto.getRandomValues(new Uint8Array(24)));
+  await env.IMG_KV.put('session:' + sessionId, '1', { expirationTtl: 86400 });
+
+  const secure = !isLocalhost(request);
+  const url = new URL(request.url);
+  const resp = Response.redirect(`${url.origin}/admin`, 302);
+  resp.headers.set('Set-Cookie', `admin_token=${sessionId}; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=86400${secure ? '; Secure' : ''}`);
+  return resp;
+}
+
 // ============================================================
 //  Admin HTML page (clean & minimal design)
 // ============================================================
@@ -592,13 +793,14 @@ async function handleWebAuthnSetupStatus(request, env) {
 function serveAdminPage(env) {
   const hasTelegramLogin = !!env.TELEGRAM_BOT_USERNAME;
   const botUsername = (env.TELEGRAM_BOT_USERNAME || '').replace(/[^a-zA-Z0-9_]/g, '');
+  const botId = hasTelegramLogin && env.BOT_TOKEN ? env.BOT_TOKEN.split(':')[0] : '';
 
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://telegram.org; connect-src 'self'; form-action 'self'; frame-src https://telegram.org https://oauth.telegram.org;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self'; form-action 'self';">
 <title>图床管理</title>
 <style>
   :root {
@@ -677,8 +879,6 @@ function serveAdminPage(env) {
     border-radius: var(--radius-sm);
   }
   .login-error.show { display: block; }
-  .tg-login-container { display: flex; justify-content: center; margin-bottom: 12px; }
-  .tg-login-container iframe { max-width: 100%; }
   .login-divider {
     display: flex; align-items: center; gap: 12px; margin: 16px 0;
     color: var(--text-muted); font-size: 12px;
@@ -876,6 +1076,70 @@ function serveAdminPage(env) {
   .toast.success { border-color: var(--success); }
   .toast.error { border-color: var(--danger); }
 
+  /* Settings Modal */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; z-index: 150;
+    background: rgba(0,0,0,0.4); align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .modal-overlay.show { display: flex; }
+  .modal {
+    background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+    width: 480px; max-width: 100%; max-height: 80vh; overflow-y: auto;
+  }
+  .modal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px; border-bottom: 1px solid var(--border);
+  }
+  .modal-header h3 { font-size: 16px; font-weight: 600; }
+  .modal-close {
+    width: 28px; height: 28px; border: none; border-radius: 4px;
+    background: transparent; color: var(--text-secondary); font-size: 18px;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+  }
+  .modal-close:hover { background: var(--primary-bg); color: var(--primary); }
+  .modal-body { padding: 20px; }
+  .modal-section { margin-bottom: 24px; }
+  .modal-section:last-child { margin-bottom: 0; }
+  .modal-section h4 {
+    font-size: 13px; font-weight: 600; color: var(--text-secondary);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px;
+  }
+  .cred-item {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 0; border-bottom: 1px solid var(--border);
+  }
+  .cred-item:last-child { border-bottom: none; }
+  .cred-info { font-size: 13px; }
+  .cred-date { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+  .danger-zone {
+    border: 1px solid var(--danger); border-radius: var(--radius-sm);
+    padding: 16px;
+  }
+  .danger-zone p { font-size: 13px; color: var(--text-secondary); margin-bottom: 12px; }
+  .modal-empty { font-size: 13px; color: var(--text-muted); padding: 8px 0; }
+
+  /* Upload Zone */
+  .upload-zone {
+    border: 2px dashed var(--border); border-radius: var(--radius);
+    padding: 40px 20px; text-align: center; cursor: pointer;
+    transition: all 0.15s; color: var(--text-muted); font-size: 14px;
+  }
+  .upload-zone:hover, .upload-zone.dragover {
+    border-color: var(--primary); color: var(--primary); background: var(--primary-bg);
+  }
+  .upload-preview { margin-top: 12px; text-align: center; }
+  .upload-preview img { max-width: 100%; max-height: 200px; border-radius: var(--radius-sm); margin-bottom: 8px; }
+  .upload-progress { font-size: 13px; color: var(--text-secondary); padding: 8px; }
+  .upload-result { text-align: center; }
+  .upload-result input[type="text"] {
+    width: 100%; padding: 6px 10px; border: 1px solid var(--border);
+    border-radius: var(--radius-sm); font-size: 12px; background: var(--bg);
+    color: var(--text); margin-bottom: 8px; outline: none;
+  }
+  .upload-result-actions { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; }
+
   @media (max-width: 640px) {
     .header-inner { padding: 0 14px; }
     .stats { padding: 0 14px; flex-direction: column; gap: 8px; }
@@ -899,14 +1163,7 @@ function serveAdminPage(env) {
     <div class="login-error" id="login-error"></div>
 
     ${hasTelegramLogin ? `
-    <div class="tg-login-container">
-      <script async src="https://telegram.org/js/telegram-widget.js?22"
-        data-telegram-login="${botUsername}"
-        data-size="large"
-        data-onauth="onTelegramAuth(user)"
-        data-request-access="read">
-      <\/script>
-    </div>
+    <button class="btn btn-passkey btn-block" id="tg-login-btn" onclick="telegramLogin()">Telegram 登录</button>
     <div class="login-divider">或</div>` : ''}
 
     <button class="btn btn-passkey btn-block" id="passkey-login-btn" style="display:none" onclick="loginPassKey()">使用 PassKey 登录</button>
@@ -925,6 +1182,9 @@ function serveAdminPage(env) {
       </div>
       <div class="header-actions">
         <button class="btn btn-ghost btn-sm" id="register-passkey-btn" style="display:none" onclick="registerPassKey()">添加 PassKey</button>
+        <button class="btn btn-ghost btn-sm" onclick="showUpload()">上传</button>
+        <button class="btn btn-ghost btn-sm" onclick="showSettings()">设置</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportUrls()">导出</button>
         <button class="btn btn-ghost btn-sm" onclick="logout()">退出登录</button>
       </div>
     </div>
@@ -973,6 +1233,59 @@ function serveAdminPage(env) {
   </div>
 </div>
 
+<!-- Settings Modal -->
+<div class="modal-overlay" id="settings-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>设置</h3>
+      <button class="modal-close" onclick="closeSettings()">&#x2715;</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-section">
+        <h4>PassKey 管理</h4>
+        <div id="credential-list">
+          <p class="modal-empty">加载中...</p>
+        </div>
+      </div>
+      <div class="modal-section">
+        <h4>危险操作</h4>
+        <div class="danger-zone">
+          <p>删除账号将清除所有 PassKey 凭证和登录会话，此操作不可撤销。</p>
+          <button class="btn btn-danger btn-sm" onclick="deleteAccount()">删除账号</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Upload Modal -->
+<div class="modal-overlay" id="upload-modal">
+  <div class="modal" style="width:400px">
+    <div class="modal-header">
+      <h3>上传图片</h3>
+      <button class="modal-close" onclick="closeUpload()">&#x2715;</button>
+    </div>
+    <div class="modal-body">
+      <div class="upload-zone" id="upload-zone" onclick="document.getElementById('file-input').click()">
+        <p>点击或拖拽图片到此处</p>
+        <input type="file" id="file-input" accept="image/*" onchange="onFileSelected(this.files)">
+      </div>
+      <div class="upload-preview" id="upload-preview" style="display:none">
+        <img id="upload-img" src="" alt="">
+        <div class="upload-progress" id="upload-progress"></div>
+        <div class="upload-result" id="upload-result" style="display:none">
+          <input type="text" id="upload-url" readonly onclick="this.select()">
+          <div class="upload-result-actions">
+            <button class="btn btn-sm btn-primary" onclick="copyUploadResult('url')">复制 URL</button>
+            <button class="btn btn-sm btn-ghost" onclick="copyUploadResult('md')">复制 MD</button>
+            <button class="btn btn-sm btn-ghost" onclick="copyUploadResult('html')">复制 HTML</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Preview Overlay -->
 <div class="preview-overlay" id="preview">
   <button class="preview-close" onclick="closePreview()">&#x2715;</button>
@@ -1007,13 +1320,17 @@ let selectedNanoids = new Set();
 })();
 
 // WebAuthn check
+const telegramConfigured = ${hasTelegramLogin};
 if (window.PublicKeyCredential) {
   PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then(avail => {
     webauthnAvailable = avail;
     if (avail) {
       fetch('/admin/api/webauthn/setup-status').then(r => r.json()).then(status => {
         if (status.canRegister) {
-          document.getElementById('register-first-passkey-btn').style.display = 'block';
+          // Only allow first-time PassKey registration from login screen when no Telegram configured
+          if (!telegramConfigured) {
+            document.getElementById('register-first-passkey-btn').style.display = 'block';
+          }
         } else {
           document.getElementById('passkey-login-btn').style.display = 'block';
         }
@@ -1024,24 +1341,48 @@ if (window.PublicKeyCredential) {
   });
 }
 
-// Telegram Login
-${hasTelegramLogin ? `
-async function onTelegramAuth(user) {
+// Telegram Login (single button: try app first, fallback to OAuth popup)
+const tgBotId = '${botId}';
+const tgBotLogin = '${botUsername}';
+
+function telegramLogin() {
   const err = document.getElementById('login-error');
   err.classList.remove('show');
-  try {
-    const resp = await fetch('/admin/api/tg-login', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(user),
-    });
-    if (resp.ok) { onLoginSuccess(); }
-    else {
-      const d = await resp.json();
-      err.textContent = 'TG 认证失败：' + (d.error || '未知错误');
-      err.classList.add('show');
+
+  // Pre-open popup to bypass popup blockers
+  const origin = window.location.origin;
+  const oauthUrl = 'https://oauth.telegram.org/auth?bot_id=' + tgBotId + '&origin=' + encodeURIComponent(origin) + '&embed=1&return_to=';
+  let popup = window.open('', 'tg_oauth', 'width=400,height=600,popup=1');
+
+  // Try to wake the Telegram app
+  window.location.href = 'tg://resolve?domain=' + tgBotLogin + '&text=/login';
+
+  let appOpened = false;
+  const onBlur = () => { appOpened = true; };
+  window.addEventListener('blur', onBlur, { once: true });
+
+  // Fallback: navigate popup to OAuth if app didn't open
+  setTimeout(() => {
+    window.removeEventListener('blur', onBlur);
+    if (!appOpened && popup && !popup.closed) {
+      popup.location.href = oauthUrl;
     }
-  } catch { err.textContent = '网络错误，请重试'; err.classList.add('show'); }
-}` : ''}
+  }, 2000);
+}
+
+// Listen for auth callback from Telegram OAuth popup
+window.addEventListener('message', function(e) {
+  if (e.origin === 'https://oauth.telegram.org' && e.data && e.data.hash) {
+    const err = document.getElementById('login-error');
+    fetch('/admin/api/tg-login', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(e.data),
+    }).then(r => {
+      if (r.ok) { onLoginSuccess(); }
+      else { r.json().then(d => { err.textContent = 'TG 认证失败：' + (d.error || '未知错误'); err.classList.add('show'); }); }
+    }).catch(() => { err.textContent = '网络错误，请重试'; err.classList.add('show'); });
+  }
+});
 
 // PassKey Login
 async function loginPassKey() {
@@ -1435,6 +1776,152 @@ document.getElementById('gallery').addEventListener('click', function(e) {
     deleteImg(target.dataset.nanoid);
   }
 });
+
+// Settings
+function showSettings() {
+  document.getElementById('settings-modal').classList.add('show');
+  loadCredentials();
+}
+function closeSettings() {
+  document.getElementById('settings-modal').classList.remove('show');
+}
+
+async function loadCredentials() {
+  const list = document.getElementById('credential-list');
+  list.innerHTML = '<p class="modal-empty">加载中...</p>';
+  try {
+    const resp = await fetch('/admin/api/webauthn/credentials');
+    if (!resp.ok) { list.innerHTML = '<p class="modal-empty">加载失败</p>'; return; }
+    const data = await resp.json();
+    if (!data.credentials || data.credentials.length === 0) {
+      list.innerHTML = '<p class="modal-empty">暂无已注册的 PassKey</p>';
+      return;
+    }
+    list.innerHTML = '';
+    for (const cred of data.credentials) {
+      const item = document.createElement('div');
+      item.className = 'cred-item';
+      const date = cred.createdAt ? new Date(cred.createdAt).toLocaleString('zh-CN') : '未知';
+      item.innerHTML = '<div class="cred-info">PassKey<div class="cred-date">注册于 ' + date + '</div></div>' +
+        '<button class="btn btn-danger btn-sm" onclick="deleteCredential(\'' + cred.id.replace(/'/g, "\\'") + '\')">删除</button>';
+      list.appendChild(item);
+    }
+  } catch { list.innerHTML = '<p class="modal-empty">加载失败</p>'; }
+}
+
+async function deleteCredential(credId) {
+  if (!confirm('确定删除此 PassKey？')) return;
+  try {
+    const resp = await fetch('/admin/api/webauthn/credentials/delete', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ credId }),
+    });
+    if (resp.ok) { showToast('已删除', 'success'); loadCredentials(); }
+    else { showToast('删除失败', 'error'); }
+  } catch { showToast('删除失败', 'error'); }
+}
+
+async function deleteAccount() {
+  if (!confirm('确定删除整个账号？所有 PassKey 凭证和登录会话将被清除。')) return;
+  if (!confirm('此操作不可撤销！确定要继续？')) return;
+  try {
+    const resp = await fetch('/admin/api/delete-account', { method: 'POST' });
+    if (resp.ok) {
+      showToast('账号已删除', 'success');
+      setTimeout(() => { location.reload(); }, 1500);
+    } else { showToast('删除失败', 'error'); }
+  } catch { showToast('删除失败', 'error'); }
+}
+
+// Upload
+function showUpload() {
+  document.getElementById('upload-modal').classList.add('show');
+  document.getElementById('upload-preview').style.display = 'none';
+  document.getElementById('upload-result').style.display = 'none';
+  document.getElementById('upload-zone').style.display = 'block';
+  document.getElementById('file-input').value = '';
+}
+function closeUpload() {
+  document.getElementById('upload-modal').classList.remove('show');
+}
+
+// Drag-and-drop upload zone
+const uploadZone = document.getElementById('upload-zone');
+document.addEventListener('dragenter', (e) => {
+  if (document.getElementById('upload-modal').classList.contains('show')) {
+    uploadZone.classList.add('dragover');
+  }
+});
+uploadZone.addEventListener('dragover', (e) => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+uploadZone.addEventListener('dragleave', () => { uploadZone.classList.remove('dragover'); });
+uploadZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  uploadZone.classList.remove('dragover');
+  if (e.dataTransfer.files.length) onFileSelected(e.dataTransfer.files);
+});
+
+async function onFileSelected(files) {
+  if (!files || !files.length) return;
+  const file = files[0];
+  if (!file.type.startsWith('image/')) { showToast('请选择图片文件', 'error'); return; }
+  if (file.size > 50 * 1024 * 1024) { showToast('文件超过 50MB 限制', 'error'); return; }
+
+  document.getElementById('upload-zone').style.display = 'none';
+  const preview = document.getElementById('upload-preview');
+  preview.style.display = 'block';
+  document.getElementById('upload-progress').textContent = '上传中...';
+  document.getElementById('upload-result').style.display = 'none';
+
+  // Show local preview
+  const reader = new FileReader();
+  reader.onload = (e) => { document.getElementById('upload-img').src = e.target.result; };
+  reader.readAsDataURL(file);
+
+  const formData = new FormData();
+  formData.append('image', file);
+
+  try {
+    const resp = await fetch('/admin/api/upload', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (resp.ok && data.ok) {
+      document.getElementById('upload-progress').textContent = '上传成功';
+      document.getElementById('upload-url').value = data.url;
+      document.getElementById('upload-result').style.display = 'block';
+      window._lastUploadResult = data;
+      refreshImages();
+    } else {
+      document.getElementById('upload-progress').textContent = '上传失败: ' + (data.error || '未知错误');
+    }
+  } catch {
+    document.getElementById('upload-progress').textContent = '上传失败: 网络错误';
+  }
+}
+
+async function copyUploadResult(format) {
+  const data = window._lastUploadResult;
+  if (!data) return;
+  const text = data[format] || data.url;
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('已复制 ' + format.toUpperCase(), 'success');
+  } catch { showToast('复制失败', 'error'); }
+}
+
+// Export URLs
+async function exportUrls() {
+  try {
+    const resp = await fetch('/admin/api/export');
+    if (!resp.ok) { showToast('导出失败', 'error'); return; }
+    const text = await resp.text();
+    const blob = new Blob([text], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'images.txt';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showToast('已导出 ' + text.split('\\n').length + ' 个 URL', 'success');
+  } catch { showToast('导出失败', 'error'); }
+}
 
 // Logout (call API to invalidate server-side session)
 async function logout() {

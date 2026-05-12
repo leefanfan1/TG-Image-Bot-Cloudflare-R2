@@ -75,6 +75,13 @@ async function handleUpdate(update, env, allowedUsers) {
     return;
   }
 
+  // Route: Login command (private chat only, prevents leaking links in groups)
+  if (msg.text && msg.text.split('@')[0] === '/login') {
+    if (msg.chat.type !== 'private') return;
+    await handleLoginCommand(env, chatId, msg, from);
+    return;
+  }
+
   // Route: Delete command (in groups, Telegram appends @BotUsername to commands)
   if (msg.text && msg.reply_to_message && msg.text.split('@')[0] === '/delete') {
     await handleDelete(env, chatId, msg, from);
@@ -84,6 +91,13 @@ async function handleUpdate(update, env, allowedUsers) {
   // Route: Image upload (photo or document)
   const fileId = getFileId(msg);
   if (fileId) {
+    // Group chat: only upload when bot is mentioned in caption
+    if (msg.chat.type === 'group' || msg.chat.type === 'supergroup') {
+      const botUsername = env.TELEGRAM_BOT_USERNAME;
+      if (!botUsername) return; // Can't verify mention, skip
+      const caption = (msg.caption || '').toLowerCase();
+      if (!caption.includes('@' + botUsername.toLowerCase())) return;
+    }
     await handleUpload(env, chatId, msg, from, fileId);
   }
 }
@@ -115,7 +129,9 @@ async function handleUpload(env, chatId, msg, from, fileId) {
   }
 
   const filePath = fileData.result.file_path;
-  const fileName = filePath.split('/').pop() || 'image';
+  // Telegram does not preserve original filename for photo messages;
+  // for documents the original name is available via msg.document.file_name
+  const fileName = msg.document?.file_name || 'image';
 
   // Enforce max file size: Telegram reports file_size in getFile response
   // Max 50MB to stay well within Worker limits
@@ -184,8 +200,8 @@ async function handleUpload(env, chatId, msg, from, fileId) {
   // Send 3 separate messages for easy copying
   const sizeStr = `(${(fileBuffer.byteLength / 1024).toFixed(1)} KB)`;
   const sizeMsg = `✅ 上传成功 ${sizeStr}\n\n${publicUrl}`;
-  const mdMsg  = `![${fileName}](${publicUrl})`;
-  const htmlMsg = `<img src="${publicUrl}" alt="${fileName}">`;
+  const mdMsg  = `![](${publicUrl})`;
+  const htmlMsg = `<img src="${publicUrl}" alt="">`;
 
   const [urlResp, mdResp, htmlResp] = await Promise.all([
     sendMessage(env.BOT_TOKEN, chatId, sizeMsg, msg.message_id, null),
@@ -206,6 +222,22 @@ async function handleUpload(env, chatId, msg, from, fileId) {
     metadata.botMessageId = botMsgIds[0];
   }
   await env.IMG_KV.put(`img:${nanoid}`, JSON.stringify(metadata));
+}
+
+async function handleLoginCommand(env, chatId, msg, from) {
+  const admins = parseAllowedUsers(env.ADMIN_USERNAMES);
+  if (!admins || !admins.includes(from.username)) {
+    await sendMessage(env.BOT_TOKEN, chatId, '❌ 你没有管理员权限。', msg.message_id);
+    return;
+  }
+
+  const token = await generateId(24);
+  await env.IMG_KV.put(`login_token:${token}`, from.username, { expirationTtl: 300 });
+
+  const loginUrl = `${env.PUBLIC_URL.replace(/\/+$/, '')}/admin?login_token=${token}`;
+  await sendMessage(env.BOT_TOKEN, chatId,
+    `🔑 [点击登录管理面板](${loginUrl})（5分钟内有效）`,
+    msg.message_id);
 }
 
 async function handleDelete(env, chatId, msg, from) {
