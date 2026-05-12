@@ -1361,13 +1361,16 @@ function telegramLogin() {
   const err = document.getElementById('login-error');
   err.classList.remove('show');
 
-  // Pre-open popup to bypass popup blockers
   const origin = window.location.origin;
   const oauthUrl = 'https://oauth.telegram.org/auth?bot_id=' + tgBotId + '&origin=' + encodeURIComponent(origin) + '&embed=1&return_to=';
+  const tgUrl = 'tg://resolve?domain=' + tgBotLogin + '&text=/login';
+
+  // Open OAuth popup first (to bypass popup blockers)
   let popup = window.open('', 'tg_oauth', 'width=400,height=600,popup=1');
 
-  // Try to wake the Telegram app
-  window.location.href = 'tg://resolve?domain=' + tgBotLogin + '&text=/login';
+  // Try to wake the Telegram app via a tiny hidden window
+  // (doesn't navigate the main page away, so the fallback setTimeout still works)
+  window.open(tgUrl, 'tg_wake', 'width=1,height=1,left=-10000,top=-10000');
 
   let appOpened = false;
   const onBlur = () => { appOpened = true; };
@@ -1376,8 +1379,12 @@ function telegramLogin() {
   // Fallback: navigate popup to OAuth if app didn't open
   setTimeout(() => {
     window.removeEventListener('blur', onBlur);
-    if (!appOpened && popup && !popup.closed) {
-      popup.location.href = oauthUrl;
+    if (!appOpened) {
+      if (!popup || popup.closed) {
+        popup = window.open(oauthUrl, 'tg_oauth', 'width=400,height=600,popup=1');
+      } else {
+        popup.location.href = oauthUrl;
+      }
     }
   }, 2000);
 }

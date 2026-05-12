@@ -231,13 +231,9 @@ async function handleLoginCommand(env, chatId, msg, from) {
     return;
   }
 
-  const token = await generateId(24);
-  await env.IMG_KV.put(`login_token:${token}`, from.username, { expirationTtl: 300 });
-
   const adminUrl = (env.ADMIN_URL || env.PUBLIC_URL).replace(/\/+$/, '');
-  const loginUrl = `${adminUrl}/admin?login_token=${token}`;
   await sendMessage(env.BOT_TOKEN, chatId,
-    `🔑 [点击登录管理面板](${loginUrl})（5分钟内有效）`,
+    `🔑 请打开管理面板，点击「使用 Telegram 登录」按钮即可登录\n\n${adminUrl}/admin`,
     msg.message_id);
 }
 
