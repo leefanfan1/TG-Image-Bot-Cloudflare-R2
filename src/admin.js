@@ -1320,6 +1320,23 @@ let currentSort = 'newest';
 let searchQuery = '';
 let selectedNanoids = new Set();
 
+// Handle Telegram OAuth redirect callback
+(function() {
+  if (!window.location.hash) return;
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  if (!params.get('hash') || !params.get('id')) return;
+  const data = {};
+  for (const [k, v] of params) data[k] = v;
+  fetch('/admin/api/tg-login', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(data),
+  }).then(r => {
+    if (r.ok) {
+      window.location.replace('/admin');
+    }
+  });
+})();
+
 // Auto-check session on page load
 (async function checkSession() {
   try {
@@ -1353,21 +1370,13 @@ if (window.PublicKeyCredential) {
   });
 }
 
-// Telegram Login — 直接打开 OAuth 弹窗
+// Telegram Login — 跳转到 Telegram OAuth，授权后自动跳回
 const tgBotId = '${botId}';
 
 function telegramLogin() {
-  const err = document.getElementById('login-error');
-  err.classList.remove('show');
-
   const origin = window.location.origin;
-  const oauthUrl = 'https://oauth.telegram.org/auth?bot_id=' + tgBotId + '&origin=' + encodeURIComponent(origin) + '&embed=1&return_to=';
-
-  let popup = window.open(oauthUrl, 'tg_oauth', 'width=400,height=600,popup=1');
-  if (!popup || popup.closed) {
-    // Popup blocked — fallback to redirect
-    window.location.href = oauthUrl;
-  }
+  const returnTo = encodeURIComponent(origin + '/admin');
+  window.location.href = 'https://oauth.telegram.org/auth?bot_id=' + tgBotId + '&origin=' + encodeURIComponent(origin) + '&return_to=' + returnTo;
 }
 
 // Listen for auth callback from Telegram OAuth popup
