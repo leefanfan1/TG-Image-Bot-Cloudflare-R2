@@ -888,6 +888,15 @@ function serveAdminPage(env) {
   }
   .btn-passkey { background: var(--card-bg); color: var(--text); border: 1px solid var(--border); }
   .btn-passkey:hover { background: var(--primary-bg); border-color: var(--primary); color: var(--primary); }
+  .btn-tg-login {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%; height: 44px; padding: 0 20px;
+    background: #2AABEE; color: #fff; border: none; border-radius: 22px;
+    font-size: 15px; font-family: inherit; cursor: pointer; transition: background 0.15s;
+    box-sizing: border-box;
+  }
+  .btn-tg-login:hover { background: #229ED4; }
+  .btn-tg-login:active { background: #1E8FC1; }
 
   /* Header */
   .header {
@@ -1163,7 +1172,10 @@ function serveAdminPage(env) {
     <div class="login-error" id="login-error"></div>
 
     ${hasTelegramLogin ? `
-    <button class="btn btn-passkey btn-block" id="tg-login-btn" onclick="telegramLogin()">Telegram 登录</button>
+    <button class="btn-tg-login" onclick="telegramLogin()">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="white"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.127.087.527.087.527l-1.523 7.185s-.144.385-.585.396c-.44.01-.651-.34-.651-.34l-2.012-2.999-1.682 1.233a.23.23 0 0 1-.148.05l.355-2.352 3.89-3.493c.163-.147.01-.207-.116-.17l-5.919 2.487-1.731-.583s-.382-.133-.418-.424c-.036-.29.44-.447.44-.447l7.272-2.803s.75-.313 1.284-.06z"/></svg>
+      <span>使用 Telegram 登录</span>
+    </button>
     <div class="login-divider">或</div>` : ''}
 
     <button class="btn btn-passkey btn-block" id="passkey-login-btn" style="display:none" onclick="loginPassKey()">使用 PassKey 登录</button>
@@ -1341,7 +1353,7 @@ if (window.PublicKeyCredential) {
   });
 }
 
-// Telegram Login (single button: try app first, fallback to OAuth popup)
+// Telegram Login (try app deep link first, fallback to OAuth popup)
 const tgBotId = '${botId}';
 const tgBotLogin = '${botUsername}';
 

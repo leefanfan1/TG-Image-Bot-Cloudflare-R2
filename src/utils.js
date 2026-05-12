@@ -116,7 +116,6 @@ export function secureHeaders(headers = {}) {
 }
 
 // CSP headers for admin page
-// Note: Telegram Login Widget requires both telegram.org (script) and oauth.telegram.org (iframe)
 export function cspHeaders() {
   return {
     'Content-Security-Policy':

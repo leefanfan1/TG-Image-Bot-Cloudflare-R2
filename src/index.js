@@ -234,7 +234,8 @@ async function handleLoginCommand(env, chatId, msg, from) {
   const token = await generateId(24);
   await env.IMG_KV.put(`login_token:${token}`, from.username, { expirationTtl: 300 });
 
-  const loginUrl = `${env.PUBLIC_URL.replace(/\/+$/, '')}/admin?login_token=${token}`;
+  const adminUrl = (env.ADMIN_URL || env.PUBLIC_URL).replace(/\/+$/, '');
+  const loginUrl = `${adminUrl}/admin?login_token=${token}`;
   await sendMessage(env.BOT_TOKEN, chatId,
     `🔑 [点击登录管理面板](${loginUrl})（5分钟内有效）`,
     msg.message_id);
