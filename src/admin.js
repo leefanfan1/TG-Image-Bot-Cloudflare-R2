@@ -800,7 +800,7 @@ function serveAdminPage(env) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' https://static.cloudflareinsights.com; form-action 'self';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://telegram.org; frame-src https://oauth.telegram.org; connect-src 'self' https://static.cloudflareinsights.com; form-action 'self';">
 <title>图床管理</title>
 <style>
   :root {
@@ -888,15 +888,7 @@ function serveAdminPage(env) {
   }
   .btn-passkey { background: var(--card-bg); color: var(--text); border: 1px solid var(--border); }
   .btn-passkey:hover { background: var(--primary-bg); border-color: var(--primary); color: var(--primary); }
-  .btn-tg-login {
-    display: flex; align-items: center; justify-content: center; gap: 8px;
-    width: 100%; height: 44px; padding: 0 20px;
-    background: #2AABEE; color: #fff; border: none; border-radius: 22px;
-    font-size: 15px; font-family: inherit; cursor: pointer; transition: background 0.15s;
-    box-sizing: border-box;
-  }
-  .btn-tg-login:hover { background: #229ED4; }
-  .btn-tg-login:active { background: #1E8FC1; }
+  .tg-login-widget-wrap { display: flex; justify-content: center; margin-bottom: 12px; }
 
   /* Header */
   .header {
@@ -1172,10 +1164,9 @@ function serveAdminPage(env) {
     <div class="login-error" id="login-error"></div>
 
     ${hasTelegramLogin ? `
-    <button class="btn-tg-login" onclick="telegramLogin()">
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="white"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.127.087.527.087.527l-1.523 7.185s-.144.385-.585.396c-.44.01-.651-.34-.651-.34l-2.012-2.999-1.682 1.233a.23.23 0 0 1-.148.05l.355-2.352 3.89-3.493c.163-.147.01-.207-.116-.17l-5.919 2.487-1.731-.583s-.382-.133-.418-.424c-.036-.29.44-.447.44-.447l7.272-2.803s.75-.313 1.284-.06z"/></svg>
-      <span>使用 Telegram 登录</span>
-    </button>
+    <div class="tg-login-widget-wrap">
+      <script async src="https://telegram.org/js/telegram-widget.js" data-telegram-login="${botUsername}" data-size="large" data-onauth="onTelegramAuth(user)" data-request-access="write"></script>
+    </div>
     <div class="login-divider">或</div>` : ''}
 
     <button class="btn btn-passkey btn-block" id="passkey-login-btn" style="display:none" onclick="loginPassKey()">使用 PassKey 登录</button>
@@ -1320,45 +1311,18 @@ let currentSort = 'newest';
 let searchQuery = '';
 let selectedNanoids = new Set();
 
-// Handle Telegram OAuth redirect callback
-(function() {
-  if (!window.location.hash) return;
-  const hash = window.location.hash.slice(1);
-  let data;
-  try {
-    // Format: #tgAuthResult=<base64 JSON>
-    const params = new URLSearchParams(hash);
-    const tgAuthResult = params.get('tgAuthResult');
-    if (tgAuthResult) {
-      data = JSON.parse(atob(tgAuthResult));
-    } else {
-      // Fallback: #id=...&hash=...&auth_date=...
-      if (!params.get('hash') || !params.get('id')) return;
-      data = {};
-      for (const [k, v] of params) data[k] = v;
-    }
-  } catch { return; }
-  (async function() {
-    try {
-      const r = await fetch('/admin/api/tg-login', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(data),
-      });
-      if (r.ok) {
-        window.location.replace('/admin');
-      } else {
-        const d = await r.json();
-        document.getElementById('login-error').textContent = 'TG 登录失败：' + (d.error || r.status);
-        document.getElementById('login-error').classList.add('show');
-        window.location.hash = '';
-      }
-    } catch (e) {
-      document.getElementById('login-error').textContent = '网络错误，请重试';
-      document.getElementById('login-error').classList.add('show');
-      window.location.hash = '';
-    }
-  })();
-})();
+// Telegram Login Widget callback
+function onTelegramAuth(user) {
+  const err = document.getElementById('login-error');
+  err.classList.remove('show');
+  fetch('/admin/api/tg-login', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(user),
+  }).then(r => {
+    if (r.ok) { onLoginSuccess(); }
+    else { r.json().then(d => { err.textContent = 'TG 认证失败：' + (d.error || '未知错误'); err.classList.add('show'); }); }
+  }).catch(() => { err.textContent = '网络错误，请重试'; err.classList.add('show'); });
+}
 
 // Auto-check session on page load
 (async function checkSession() {
@@ -1393,16 +1357,8 @@ if (window.PublicKeyCredential) {
   });
 }
 
-// Telegram Login — 跳转到 Telegram OAuth，授权后自动跳回
+// Listen for auth callback from Telegram OAuth (popup/fallback)
 const tgBotId = '${botId}';
-
-function telegramLogin() {
-  const origin = window.location.origin;
-  const returnTo = encodeURIComponent(origin + '/admin');
-  window.location.href = 'https://oauth.telegram.org/auth?bot_id=' + tgBotId + '&origin=' + encodeURIComponent(origin) + '&return_to=' + returnTo;
-}
-
-// Listen for auth callback from Telegram OAuth popup
 window.addEventListener('message', function(e) {
   if (e.origin === 'https://oauth.telegram.org' && e.data && e.data.hash) {
     const err = document.getElementById('login-error');
