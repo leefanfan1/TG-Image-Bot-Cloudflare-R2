@@ -1323,10 +1323,21 @@ let selectedNanoids = new Set();
 // Handle Telegram OAuth redirect callback
 (function() {
   if (!window.location.hash) return;
-  const params = new URLSearchParams(window.location.hash.slice(1));
-  if (!params.get('hash') || !params.get('id')) return;
-  const data = {};
-  for (const [k, v] of params) data[k] = v;
+  const hash = window.location.hash.slice(1);
+  let data;
+  try {
+    // Format: #tgAuthResult=<base64 JSON>
+    const params = new URLSearchParams(hash);
+    const tgAuthResult = params.get('tgAuthResult');
+    if (tgAuthResult) {
+      data = JSON.parse(atob(tgAuthResult));
+    } else {
+      // Fallback: #id=...&hash=...&auth_date=...
+      if (!params.get('hash') || !params.get('id')) return;
+      data = {};
+      for (const [k, v] of params) data[k] = v;
+    }
+  } catch { return; }
   (async function() {
     try {
       const r = await fetch('/admin/api/tg-login', {
