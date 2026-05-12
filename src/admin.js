@@ -1286,7 +1286,7 @@ async function serveAdminPage(env) {
     <div class="modal-body">
       <div class="upload-zone" id="upload-zone" onclick="document.getElementById('file-input').click()">
         <p>点击或拖拽图片到此处</p>
-        <input type="file" id="file-input" accept="image/*" onchange="onFileSelected(this.files)">
+        <input type="file" id="file-input" accept="image/*" style="display:none" onchange="onFileSelected(this.files)">
       </div>
       <div class="upload-preview" id="upload-preview" style="display:none">
         <img id="upload-img" src="" alt="">
@@ -1538,7 +1538,10 @@ async function batchDelete() {
     if (resp.ok) {
       showToast(\`已删除 \${count} 张图片\`, 'success');
       selectedNanoids.clear();
-      refreshImages();
+      allImages = allImages.filter(img => !selectedNanoids.has(img.nanoid));
+      document.getElementById('gallery').innerHTML = '';
+      applyFilter();
+      updateStats();
     } else {
       const d = await resp.json();
       showToast('批量删除失败: ' + (d.error || ''), 'error');
