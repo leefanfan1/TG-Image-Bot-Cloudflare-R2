@@ -590,6 +590,7 @@ async function handleWebAuthnRegisterComplete(request, env) {
       },
     });
   } catch (err) {
+    console.error('WebAuthn register complete error:', err.message);
     return new Response(JSON.stringify({ error: err.message }), {
       status: 400, headers: { ...secureHeaders({ 'Content-Type': 'application/json' }), ...cspHeaders() },
     });
@@ -1485,7 +1486,7 @@ function base64ToArray(str) {
 }
 function arrayToBase64(arr) {
   return btoa(String.fromCharCode(...new Uint8Array(arr)))
-    .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+    .replace(/\\+/g, '-').replace(/\\/g, '_').replace(/=+$/, '');
 }
 
 // Card Selection
