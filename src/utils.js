@@ -124,7 +124,7 @@ export function cspHeaders() {
       + "img-src 'self' https:; "
       + "style-src 'self' 'unsafe-inline'; "
       + "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
-      + "connect-src 'self'; "
+      + "connect-src 'self' https://static.cloudflareinsights.com; "
       + "form-action 'self';",
   };
 }

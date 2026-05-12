@@ -800,7 +800,7 @@ function serveAdminPage(env) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self'; form-action 'self';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' https://static.cloudflareinsights.com; form-action 'self';">
 <title>图床管理</title>
 <style>
   :root {
@@ -1802,8 +1802,16 @@ async function loadCredentials() {
       const item = document.createElement('div');
       item.className = 'cred-item';
       const date = cred.createdAt ? new Date(cred.createdAt).toLocaleString('zh-CN') : '未知';
-      item.innerHTML = '<div class="cred-info">PassKey<div class="cred-date">注册于 ' + date + '</div></div>' +
-        '<button class="btn btn-danger btn-sm" onclick="deleteCredential(\'' + cred.id.replace(/'/g, "\\'") + '\')">删除</button>';
+      const info = document.createElement('div');
+      info.className = 'cred-info';
+      info.innerHTML = 'PassKey<div class="cred-date">注册于 ' + date + '</div>';
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn btn-danger btn-sm';
+      delBtn.textContent = '删除';
+      delBtn.dataset.credid = cred.id;
+      delBtn.onclick = function() { deleteCredential(this.dataset.credid); };
+      item.appendChild(info);
+      item.appendChild(delBtn);
       list.appendChild(item);
     }
   } catch { list.innerHTML = '<p class="modal-empty">加载失败</p>'; }
