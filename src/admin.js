@@ -1537,8 +1537,8 @@ async function batchDelete() {
     });
     if (resp.ok) {
       showToast(\`已删除 \${count} 张图片\`, 'success');
-      selectedNanoids.clear();
       allImages = allImages.filter(img => !selectedNanoids.has(img.nanoid));
+      selectedNanoids.clear();
       document.getElementById('gallery').innerHTML = '';
       applyFilter();
       updateStats();
