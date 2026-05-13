@@ -1542,6 +1542,9 @@ async function batchDelete() {
       document.getElementById('gallery').innerHTML = '';
       applyFilter();
       updateStats();
+      btn.disabled = false;
+      btn.innerHTML = '删除选中 (<span id="selected-count">0</span>)';
+      updateBatchDeleteBtn();
     } else {
       const d = await resp.json();
       showToast('批量删除失败: ' + (d.error || ''), 'error');

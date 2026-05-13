@@ -35,7 +35,7 @@
 
 ### 前置准备
 
--  [Cloudflare](https://dash.cloudflare.com) 账号（免费版即可）
+-  [Cloudflare](https://dash.cloudflare.com) 账号
 -  [Telegram](https://t.me) 账号
 
 ---
