@@ -183,7 +183,7 @@ export function cspHeaders() {
       "default-src 'self'; "
       + "img-src 'self' https:; "
       + "style-src 'self' 'unsafe-inline'; "
-      + "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://telegram.org; "
+      + "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://telegram.org https://static.cloudflareinsights.com; "
       + "frame-src https://oauth.telegram.org; "
       + "connect-src 'self' https://static.cloudflareinsights.com; "
       + "form-action 'self';",
